@@ -1,6 +1,17 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KomariLoadRecord, PingTaskPoint, PingTaskSeries } from '../types/komari';
-import { bytesPerSecToMbps, getLatencyColor } from '../utils/format';
+import { bytesPerSecToMbps } from '../utils/format';
+
+interface PlotPoint {
+  x: number;
+  y: number;
+}
+
+interface PlotLayout {
+  width: number;
+  height: number;
+  themeRev: number;
+}
 
 function formatAxisTime(ts: number, hours: number): string {
   if (!ts) return '';
@@ -13,14 +24,184 @@ function formatAxisTime(ts: number, hours: number): string {
   return `${hh}:${mm}`;
 }
 
-function pickSample(points: PingTaskPoint[], idx: number, timelineCount: number): PingTaskPoint | null {
-  if (points.length === 0 || timelineCount === 0) return null;
+function formatTooltipTime(ts: number): string {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const da = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${mo}/${da} ${hh}:${mm}`;
+}
+
+function pickSample(points: PingTaskPoint[], idx: number, totalBuckets: number): PingTaskPoint | null {
+  if (points.length === 0 || totalBuckets === 0) return null;
   const mapped = Math.min(
     points.length - 1,
-    Math.round((idx / Math.max(1, timelineCount - 1)) * (points.length - 1))
+    Math.round((idx / Math.max(1, totalBuckets - 1)) * (points.length - 1))
   );
   return points[mapped];
 }
+
+function computeNiceAxis(
+  rawMin: number,
+  rawMax: number
+): { min: number; max: number; ticks: number[] } {
+  if (!Number.isFinite(rawMin) || !Number.isFinite(rawMax)) {
+    return { min: 0, max: 100, ticks: [0, 25, 50, 75, 100] };
+  }
+  const lo = rawMin < rawMax * 0.28 ? 0 : Math.max(0, rawMin * 0.92);
+  const hi = Math.max(lo + 8, rawMax * 1.08);
+  const roughStep = (hi - lo) / 4;
+  const mag = Math.pow(10, Math.floor(Math.log10(Math.max(1, roughStep))));
+  const residual = roughStep / mag;
+  const niceMult =
+    residual <= 1 ? 1 : residual <= 2 ? 2 : residual <= 2.5 ? 2.5 : residual <= 5 ? 5 : 10;
+  const step = Math.max(1, Math.round(niceMult * mag));
+  const niceMin = Math.floor(lo / step) * step;
+  const niceMax = Math.max(niceMin + step * 2, Math.ceil(hi / step) * step);
+  const ticks: number[] = [];
+  for (let v = niceMin; v <= niceMax + step * 0.01; v += step) {
+    ticks.push(Math.round(v));
+  }
+  return { min: niceMin, max: niceMax, ticks };
+}
+
+function withAlpha(color: string, alpha: number): string {
+  const trimmed = color.trim();
+  if (trimmed.startsWith('#')) {
+    const hex = trimmed.slice(1);
+    const full =
+      hex.length === 3
+        ? hex
+            .split('')
+            .map((c) => c + c)
+            .join('')
+        : hex;
+    if (full.length === 6) {
+      const r = parseInt(full.slice(0, 2), 16);
+      const g = parseInt(full.slice(2, 4), 16);
+      const b = parseInt(full.slice(4, 6), 16);
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+  }
+  const rgbMatch = trimmed.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+  if (rgbMatch) {
+    return `rgba(${rgbMatch[1]}, ${rgbMatch[2]}, ${rgbMatch[3]}, ${alpha})`;
+  }
+  return trimmed;
+}
+
+/**
+ * Fritsch–Carlson Monotone Cubic Hermite Spline:
+ * Smooth ECharts-style curve interpolation that never overshoots local extrema (e.g. 0ms stays >= 0ms).
+ */
+function traceMonotoneSpline(
+  ctx: CanvasRenderingContext2D,
+  pts: PlotPoint[],
+  moveFirst = true
+): void {
+  const n = pts.length;
+  if (n === 0) return;
+
+  if (moveFirst) {
+    ctx.moveTo(pts[0].x, pts[0].y);
+  } else {
+    ctx.lineTo(pts[0].x, pts[0].y);
+  }
+
+  if (n === 1) return;
+  if (n === 2) {
+    ctx.lineTo(pts[1].x, pts[1].y);
+    return;
+  }
+
+  const deltas = new Array<number>(n - 1);
+  const slopes = new Array<number>(n);
+
+  for (let i = 0; i < n - 1; i++) {
+    const dx = Math.max(1e-5, pts[i + 1].x - pts[i].x);
+    deltas[i] = (pts[i + 1].y - pts[i].y) / dx;
+  }
+
+  slopes[0] = deltas[0];
+  slopes[n - 1] = deltas[n - 2];
+
+  for (let i = 1; i < n - 1; i++) {
+    if (deltas[i - 1] * deltas[i] <= 0) {
+      slopes[i] = 0;
+    } else {
+      slopes[i] = (deltas[i - 1] + deltas[i]) * 0.5;
+    }
+  }
+
+  for (let i = 0; i < n - 1; i++) {
+    const d = deltas[i];
+    if (Math.abs(d) < 1e-9) {
+      slopes[i] = 0;
+      slopes[i + 1] = 0;
+    } else {
+      const a = slopes[i] / d;
+      const b = slopes[i + 1] / d;
+      const h = a * a + b * b;
+      if (h > 9) {
+        const tau = 3 / Math.sqrt(h);
+        slopes[i] = tau * a * d;
+        slopes[i + 1] = tau * b * d;
+      }
+    }
+  }
+
+  for (let i = 0; i < n - 1; i++) {
+    const dx3 = (pts[i + 1].x - pts[i].x) / 3;
+    ctx.bezierCurveTo(
+      pts[i].x + dx3,
+      pts[i].y + slopes[i] * dx3,
+      pts[i + 1].x - dx3,
+      pts[i + 1].y - slopes[i + 1] * dx3,
+      pts[i + 1].x,
+      pts[i + 1].y
+    );
+  }
+}
+
+function usePlotObserver(containerRef: React.RefObject<HTMLDivElement | null>): PlotLayout {
+  const [layout, setLayout] = useState<PlotLayout>({ width: 0, height: 0, themeRev: 0 });
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const ro = new ResizeObserver((entries) => {
+      const rect = entries[0]?.contentRect;
+      if (!rect) return;
+      const w = Math.round(rect.width);
+      const h = Math.round(rect.height);
+      setLayout((prev) => (prev.width === w && prev.height === h ? prev : { ...prev, width: w, height: h }));
+    });
+    ro.observe(el);
+
+    const mo = new MutationObserver(() => {
+      setLayout((prev) => ({ ...prev, themeRev: prev.themeRev + 1 }));
+    });
+    mo.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme', 'style', 'class'],
+    });
+
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+    };
+  }, [containerRef]);
+
+  return layout;
+}
+
+const PAD_LEFT = 46;
+const PAD_RIGHT = 14;
+const PAD_TOP = 14;
+const PAD_BOTTOM = 24;
 
 interface MultiTargetPingChartProps {
   seriesList: PingTaskSeries[];
@@ -33,8 +214,13 @@ export const MultiTargetPingChart: React.FC<MultiTargetPingChartProps> = memo(
   ({ seriesList, hours, loading, defaultCutPeak }) => {
     const [cutPeak, setCutPeak] = useState<boolean>(defaultCutPeak);
     const [hiddenIds, setHiddenIds] = useState<Set<number>>(() => new Set());
+    const [focusTaskId, setFocusTaskId] = useState<number | null>(null);
     const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+
+    const wellRef = useRef<HTMLDivElement | null>(null);
+    const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const rafRef = useRef<number | null>(null);
+    const layout = usePlotObserver(wellRef);
 
     useEffect(() => {
       return () => {
@@ -47,84 +233,249 @@ export const MultiTargetPingChart: React.FC<MultiTargetPingChartProps> = memo(
       [seriesList, hiddenIds]
     );
 
-    const timelineCount = useMemo(
+    const rawTimelineCount = useMemo(
       () => seriesList.reduce((m, s) => Math.max(m, s.points.length), 0),
       [seriesList]
     );
 
-    const W = 780;
-    const H = 235;
-    const padLeft = 44;
-    const padRight = 14;
-    const padTop = 18;
-    const padBottom = 26;
-    const plotW = W - padLeft - padRight;
-    const plotH = H - padTop - padBottom;
+    const plotW = Math.max(10, layout.width - PAD_LEFT - PAD_RIGHT);
+    const plotH = Math.max(10, layout.height - PAD_TOP - PAD_BOTTOM);
 
-    // Precompute Y-bounds, SVG paths, loss spikes, and X-ticks ONLY when data/toggles change (never on hover!)
-    const chartGeometry = useMemo(() => {
-      const vals: number[] = [];
+    // Cap sample density to ~3.2px spacing so curves remain silky smooth even on 24h/72h windows
+    const sampleCount = useMemo(() => {
+      if (rawTimelineCount <= 0) return 0;
+      const cap = layout.width > 0 ? Math.max(96, Math.floor(plotW / 3.2)) : 240;
+      return Math.min(rawTimelineCount, cap);
+    }, [rawTimelineCount, layout.width, plotW]);
+
+    const chartModel = useMemo(() => {
+      let minRaw = Infinity;
+      let maxRaw = -Infinity;
       let spikeCount = 0;
 
       for (const s of activeSeries) {
         for (const p of s.points) {
           if (p.wasShaved) spikeCount += 1;
           const v = cutPeak ? p.shavedMs : p.rawMs;
-          if (v !== null) vals.push(v);
-        }
-      }
-
-      const minVal = vals.length > 0 ? Math.max(0, Math.floor(Math.min(...vals) * 0.82)) : 0;
-      const maxVal =
-        vals.length > 0 ? Math.max(minVal + 16, Math.ceil(Math.max(...vals) * 1.12)) : 100;
-      const span = Math.max(1, maxVal - minVal);
-
-      const paths = activeSeries.map((s) => {
-        if (timelineCount === 0 || s.points.length === 0) {
-          return { taskId: s.taskId, color: s.color, d: '' };
-        }
-        const cmds: string[] = [];
-        let penDown = false;
-        for (let i = 0; i < timelineCount; i++) {
-          const pt = pickSample(s.points, i, timelineCount);
-          const val = pt ? (cutPeak ? pt.shavedMs : pt.rawMs) : null;
-          if (val === null) {
-            penDown = false;
-            continue;
+          if (v !== null) {
+            if (v < minRaw) minRaw = v;
+            if (v > maxRaw) maxRaw = v;
           }
-          const x = padLeft + (i / Math.max(1, timelineCount - 1)) * plotW;
-          const y = padTop + plotH - ((val - minVal) / span) * plotH;
-          cmds.push(`${penDown ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`);
-          penDown = true;
-        }
-        return { taskId: s.taskId, color: s.color, d: cmds.join(' ') };
-      });
-
-      const lossXs: number[] = [];
-      for (let i = 0; i < timelineCount; i++) {
-        if (activeSeries.some((s) => pickSample(s.points, i, timelineCount)?.lost)) {
-          lossXs.push(padLeft + (i / Math.max(1, timelineCount - 1)) * plotW);
         }
       }
+
+      const axis =
+        minRaw <= maxRaw
+          ? computeNiceAxis(minRaw, maxRaw)
+          : { min: 0, max: 100, ticks: [0, 25, 50, 75, 100] };
 
       const refSeries = seriesList.find((s) => s.points.length > 0) || null;
-      const xTicks = refSeries
-        ? [0, 0.25, 0.5, 0.75, 1].map((p) => {
-            const idx = Math.min(
-              timelineCount - 1,
-              Math.round(p * Math.max(0, timelineCount - 1))
-            );
-            const pt = pickSample(refSeries.points, idx, timelineCount);
-            return {
-              p,
-              x: padLeft + p * plotW,
-              label: formatAxisTime(pt?.ts ?? 0, hours),
-            };
-          })
-        : [];
+      const tickCount = layout.width > 0 && layout.width < 460 ? 4 : 5;
+      const xTicks =
+        refSeries && sampleCount > 0
+          ? Array.from({ length: tickCount }, (_, idx) => {
+              const p = idx / Math.max(1, tickCount - 1);
+              const sIdx = Math.min(
+                sampleCount - 1,
+                Math.round(p * Math.max(0, sampleCount - 1))
+              );
+              const pt = pickSample(refSeries.points, sIdx, sampleCount);
+              return {
+                p,
+                label: formatAxisTime(pt?.ts ?? 0, hours),
+              };
+            })
+          : [];
 
-      return { minVal, maxVal, shavedSpikeCount: spikeCount, paths, lossXs, xTicks, refSeries };
-    }, [activeSeries, cutPeak, timelineCount, seriesList, hours, plotW, plotH]);
+      return {
+        minVal: axis.min,
+        maxVal: axis.max,
+        yTicks: axis.ticks,
+        shavedSpikeCount: spikeCount,
+        refSeries,
+        xTicks,
+      };
+    }, [activeSeries, cutPeak, seriesList, sampleCount, hours, layout.width]);
+
+    const safeHoverIdx =
+      hoverIdx !== null && sampleCount > 0 ? Math.min(hoverIdx, sampleCount - 1) : null;
+
+    // High-DPI Retina Canvas Renderer
+    useEffect(() => {
+      const canvas = canvasRef.current;
+      if (!canvas || layout.width <= 0 || layout.height <= 0 || sampleCount <= 0) return;
+
+      const dpr = Math.min(window.devicePixelRatio || 1, 3);
+      const targetW = Math.round(layout.width * dpr);
+      const targetH = Math.round(layout.height * dpr);
+      if (canvas.width !== targetW || canvas.height !== targetH) {
+        canvas.width = targetW;
+        canvas.height = targetH;
+      }
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, layout.width, layout.height);
+
+      const styles = getComputedStyle(canvas);
+      const gridColor = styles.getPropertyValue('--chart-grid').trim() || 'rgba(148, 163, 184, 0.12)';
+      const axisColor = styles.getPropertyValue('--chart-axis').trim() || '#8b9bb0';
+      const bgCanvas = styles.getPropertyValue('--bg-canvas').trim() || '#090d16';
+      const fontMono =
+        styles.getPropertyValue('--font-mono').trim() ||
+        'ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, monospace';
+
+      const span = Math.max(1, chartModel.maxVal - chartModel.minVal);
+      const yFor = (v: number) =>
+        PAD_TOP + plotH - ((v - chartModel.minVal) / span) * plotH;
+      const xFor = (i: number) =>
+        PAD_LEFT + (i / Math.max(1, sampleCount - 1)) * plotW;
+
+      // 1. Horizontal Gridlines & Crisp Y-Axis Labels
+      ctx.font = `11px ${fontMono}`;
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'right';
+
+      for (let i = 0; i < chartModel.yTicks.length; i++) {
+        const val = chartModel.yTicks[i];
+        const y = Math.round(yFor(val)) + 0.5;
+
+        ctx.beginPath();
+        ctx.strokeStyle = gridColor;
+        ctx.lineWidth = 1;
+        if (i === 0) {
+          ctx.setLineDash([]);
+        } else {
+          ctx.setLineDash([3, 4]);
+        }
+        ctx.moveTo(PAD_LEFT, y);
+        ctx.lineTo(PAD_LEFT + plotW, y);
+        ctx.stroke();
+
+        ctx.fillStyle = axisColor;
+        ctx.fillText(`${val}`, PAD_LEFT - 8, y);
+      }
+      ctx.setLineDash([]);
+
+      // 2. X-Axis Time Labels
+      ctx.textBaseline = 'bottom';
+      for (const tick of chartModel.xTicks) {
+        const x = PAD_LEFT + tick.p * plotW;
+        ctx.textAlign = tick.p === 0 ? 'left' : tick.p === 1 ? 'right' : 'center';
+        ctx.fillStyle = axisColor;
+        ctx.fillText(tick.label, x, layout.height - 3);
+      }
+
+      // 3. Multi-Series Smooth Monotone Cubic Splines (Spotlight-aware)
+      const hasFocusedActive =
+        focusTaskId !== null && activeSeries.some((s) => s.taskId === focusTaskId);
+
+      const orderedSeries = hasFocusedActive
+        ? [
+            ...activeSeries.filter((s) => s.taskId !== focusTaskId),
+            ...activeSeries.filter((s) => s.taskId === focusTaskId),
+          ]
+        : activeSeries;
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(PAD_LEFT - 1, PAD_TOP - 3, plotW + 2, plotH + 6);
+      ctx.clip();
+
+      for (const s of orderedSeries) {
+        const isFocused = hasFocusedActive && s.taskId === focusTaskId;
+        const isDimmed = hasFocusedActive && s.taskId !== focusTaskId;
+
+        const segments: PlotPoint[][] = [];
+        let currentSeg: PlotPoint[] = [];
+
+        for (let i = 0; i < sampleCount; i++) {
+          const pt = pickSample(s.points, i, sampleCount);
+          const val = pt ? (cutPeak ? pt.shavedMs : pt.rawMs) : null;
+          if (val === null) {
+            if (currentSeg.length > 0) {
+              segments.push(currentSeg);
+              currentSeg = [];
+            }
+            continue;
+          }
+          currentSeg.push({ x: xFor(i), y: yFor(val) });
+        }
+        if (currentSeg.length > 0) {
+          segments.push(currentSeg);
+        }
+
+        ctx.globalAlpha = isDimmed ? 0.14 : isFocused ? 1 : activeSeries.length > 6 ? 0.88 : 0.94;
+        ctx.strokeStyle = s.color;
+        ctx.fillStyle = s.color;
+        ctx.lineWidth = isFocused ? 2.15 : isDimmed ? 1.05 : activeSeries.length === 1 ? 1.65 : 1.35;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+
+        if (isFocused) {
+          ctx.shadowColor = withAlpha(s.color, 0.45);
+          ctx.shadowBlur = 6;
+        }
+
+        for (const seg of segments) {
+          if (seg.length === 1) {
+            ctx.beginPath();
+            ctx.arc(seg[0].x, seg[0].y, isFocused ? 2.2 : 1.5, 0, Math.PI * 2);
+            ctx.fill();
+          } else {
+            ctx.beginPath();
+            traceMonotoneSpline(ctx, seg, true);
+            ctx.stroke();
+          }
+        }
+
+        if (isFocused) {
+          ctx.shadowBlur = 0;
+        }
+      }
+
+      ctx.restore();
+      ctx.globalAlpha = 1;
+
+      // 4. Interactive Crosshair & Crisp Point Markers
+      if (safeHoverIdx !== null) {
+        const hx = Math.round(xFor(safeHoverIdx)) + 0.5;
+        ctx.beginPath();
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = axisColor;
+        ctx.lineWidth = 1;
+        ctx.moveTo(hx, PAD_TOP);
+        ctx.lineTo(hx, PAD_TOP + plotH);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        for (const s of orderedSeries) {
+          const pt = pickSample(s.points, safeHoverIdx, sampleCount);
+          const val = pt ? (cutPeak ? pt.shavedMs : pt.rawMs) : null;
+          if (val === null) continue;
+          const hy = yFor(val);
+          ctx.beginPath();
+          ctx.arc(hx, hy, 3.1, 0, Math.PI * 2);
+          ctx.fillStyle = s.color;
+          ctx.fill();
+          ctx.lineWidth = 1.4;
+          ctx.strokeStyle = bgCanvas;
+          ctx.stroke();
+        }
+      }
+    }, [
+      layout,
+      sampleCount,
+      plotW,
+      plotH,
+      chartModel,
+      activeSeries,
+      cutPeak,
+      focusTaskId,
+      safeHoverIdx,
+    ]);
 
     const toggleTask = useCallback((taskId: number) => {
       setHiddenIds((prev) => {
@@ -153,26 +504,28 @@ export const MultiTargetPingChart: React.FC<MultiTargetPingChartProps> = memo(
 
     const schedulePointerIndex = useCallback(
       (clientX: number, rectLeft: number, rectWidth: number) => {
-        if (timelineCount <= 0 || rectWidth <= 0) return;
+        if (sampleCount <= 0 || rectWidth <= 0) return;
         if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
         rafRef.current = requestAnimationFrame(() => {
-          const relX = ((clientX - rectLeft) / rectWidth) * W;
-          const clamped = Math.max(padLeft, Math.min(W - padRight, relX));
-          const idx = Math.round(
-            ((clamped - padLeft) / plotW) * Math.max(1, timelineCount - 1)
-          );
-          const bounded = Math.max(0, Math.min(timelineCount - 1, idx));
+          const localX = clientX - rectLeft;
+          const usableW = Math.max(10, rectWidth - PAD_LEFT - PAD_RIGHT);
+          const clamped = Math.max(0, Math.min(usableW, localX - PAD_LEFT));
+          const idx = Math.round((clamped / usableW) * Math.max(1, sampleCount - 1));
+          const bounded = Math.max(0, Math.min(sampleCount - 1, idx));
           setHoverIdx((prev) => (prev === bounded ? prev : bounded));
         });
       },
-      [timelineCount, plotW]
+      [sampleCount]
     );
 
     const rangeLabel = hours >= 24 ? `${hours / 24} 天` : `${hours} 小时`;
     const hoveredTs =
-      hoverIdx !== null && chartGeometry.refSeries
-        ? pickSample(chartGeometry.refSeries.points, hoverIdx, timelineCount)?.ts ?? 0
+      safeHoverIdx !== null && chartModel.refSeries
+        ? pickSample(chartModel.refSeries.points, safeHoverIdx, sampleCount)?.ts ?? 0
         : 0;
+    const hoverRatio =
+      safeHoverIdx !== null && sampleCount > 1 ? safeHoverIdx / (sampleCount - 1) : 0;
+    const useTwoColTooltip = activeSeries.length > 6 && layout.width >= 520;
 
     return (
       <div className="glass-panel chart-card km-load-chart">
@@ -204,9 +557,9 @@ export const MultiTargetPingChart: React.FC<MultiTargetPingChartProps> = memo(
               onClick={() => setCutPeak((v) => !v)}
             >
               <span>✂ 削峰</span>
-              {cutPeak && chartGeometry.shavedSpikeCount > 0 && (
+              {cutPeak && chartModel.shavedSpikeCount > 0 && (
                 <span style={{ opacity: 0.78, fontSize: 10.5 }}>
-                  ({chartGeometry.shavedSpikeCount})
+                  ({chartModel.shavedSpikeCount})
                 </span>
               )}
             </button>
@@ -215,7 +568,7 @@ export const MultiTargetPingChart: React.FC<MultiTargetPingChartProps> = memo(
               <>
                 <button
                   type="button"
-                  className="glass-icon-btn"
+                  className={`glass-icon-btn ${hiddenIds.size === 0 ? '' : 'active-toggle'}`}
                   onClick={() => setHiddenIds(new Set())}
                 >
                   全显
@@ -224,13 +577,17 @@ export const MultiTargetPingChart: React.FC<MultiTargetPingChartProps> = memo(
                   type="button"
                   className="glass-icon-btn"
                   onClick={() => {
-                    const onlyLossy = new Set(
+                    const nonLossy = new Set(
                       seriesList.filter((s) => s.lossPct <= 0).map((s) => s.taskId)
                     );
-                    if (onlyLossy.size === seriesList.length) {
+                    if (
+                      nonLossy.size === seriesList.length ||
+                      (hiddenIds.size === nonLossy.size &&
+                        Array.from(nonLossy).every((id) => hiddenIds.has(id)))
+                    ) {
                       setHiddenIds(new Set());
                     } else {
-                      setHiddenIds(onlyLossy);
+                      setHiddenIds(nonLossy);
                     }
                   }}
                 >
@@ -245,20 +602,36 @@ export const MultiTargetPingChart: React.FC<MultiTargetPingChartProps> = memo(
           <div className="probe-matrix-grid mono">
             {seriesList.map((s) => {
               const isHidden = hiddenIds.has(s.taskId);
-              const stColor = getLatencyColor(s.latestMs, s.lossPct);
+              const isSolo =
+                seriesList.length > 1 &&
+                !isHidden &&
+                hiddenIds.size === seriesList.length - 1;
+              const lossTone =
+                s.lossPct >= 5
+                  ? 'var(--accent-coral)'
+                  : s.lossPct > 0
+                  ? 'var(--accent-amber)'
+                  : 'var(--text-muted)';
+
               return (
                 <div
                   key={s.taskId}
                   role="button"
                   tabIndex={0}
                   onClick={() => toggleTask(s.taskId)}
+                  onMouseEnter={() => setFocusTaskId(s.taskId)}
+                  onMouseLeave={() =>
+                    setFocusTaskId((prev) => (prev === s.taskId ? null : prev))
+                  }
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
                       toggleTask(s.taskId);
                     }
                   }}
-                  className={`probe-chip-card ${isHidden ? 'inactive' : ''}`}
+                  className={`probe-chip-card ${isHidden ? 'inactive' : ''} ${
+                    focusTaskId === s.taskId && !isHidden ? 'focused' : ''
+                  }`}
                 >
                   <div
                     style={{
@@ -272,17 +645,18 @@ export const MultiTargetPingChart: React.FC<MultiTargetPingChartProps> = memo(
                       style={{
                         display: 'flex',
                         alignItems: 'center',
-                        gap: 6,
+                        gap: 7,
                         minWidth: 0,
                         fontWeight: 600,
-                        fontSize: 11.5,
+                        fontSize: 12,
+                        color: 'var(--text-primary)',
                       }}
                     >
                       <span
                         style={{
-                          width: 7,
-                          height: 7,
-                          borderRadius: '50%',
+                          width: 3.5,
+                          height: 12,
+                          borderRadius: 2,
                           backgroundColor: s.color,
                           flexShrink: 0,
                         }}
@@ -304,14 +678,16 @@ export const MultiTargetPingChart: React.FC<MultiTargetPingChartProps> = memo(
                         onClick={(e) => soloTask(e, s.taskId)}
                         style={{
                           fontSize: 10,
-                          padding: '1px 5px',
+                          padding: '1px 6px',
                           borderRadius: 4,
-                          backgroundColor: 'var(--glass-well-hover)',
-                          color: 'var(--text-secondary)',
+                          backgroundColor: isSolo
+                            ? 'var(--accent-pill-bg)'
+                            : 'var(--glass-well-hover)',
+                          color: isSolo ? 'var(--accent-pill-text)' : 'var(--text-muted)',
                           flexShrink: 0,
                         }}
                       >
-                        单看
+                        {isSolo ? '恢复' : '单看'}
                       </span>
                     )}
                   </div>
@@ -321,28 +697,27 @@ export const MultiTargetPingChart: React.FC<MultiTargetPingChartProps> = memo(
                       display: 'flex',
                       alignItems: 'baseline',
                       justifyContent: 'space-between',
-                      marginTop: 4,
+                      gap: 6,
+                      marginTop: 5,
+                      fontSize: 11,
                     }}
                   >
-                    <span style={{ fontSize: 13.5, fontWeight: 600, color: stColor }}>
-                      {s.latestMs !== null ? `${s.latestMs}ms` : '--'}
+                    <span>
+                      <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                        {s.latestMs !== null ? `${s.latestMs}ms` : '--'}
+                      </span>
+                      <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>
+                        均 {s.avgMs ?? '--'}
+                      </span>
                     </span>
-                    <span style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>
-                      均 {s.avgMs ?? '--'}ms
+                    <span
+                      style={{
+                        color: lossTone,
+                        fontWeight: s.lossPct > 0 ? 600 : 400,
+                      }}
+                    >
+                      丢包 {s.lossPct.toFixed(1)}%
                     </span>
-                  </div>
-
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      marginTop: 1,
-                      fontSize: 10.5,
-                    }}
-                  >
-                    <span style={{ color: stColor }}>丢包 {s.lossPct.toFixed(1)}%</span>
-                    <span style={{ color: 'var(--text-muted)' }}>峰 {s.maxMs ?? '--'}ms</span>
                   </div>
                 </div>
               );
@@ -350,14 +725,7 @@ export const MultiTargetPingChart: React.FC<MultiTargetPingChartProps> = memo(
           </div>
         )}
 
-        <div
-          style={{
-            position: 'relative',
-            width: '100%',
-            height: 230,
-            touchAction: 'pan-y',
-          }}
-        >
+        <div className="chart-canvas-well" ref={wellRef}>
           {loading && seriesList.length === 0 ? (
             <div
               className="mono"
@@ -372,7 +740,7 @@ export const MultiTargetPingChart: React.FC<MultiTargetPingChartProps> = memo(
             >
               加载中...
             </div>
-          ) : seriesList.length === 0 || timelineCount === 0 ? (
+          ) : seriesList.length === 0 || sampleCount === 0 ? (
             <div
               className="mono"
               style={{
@@ -388,10 +756,9 @@ export const MultiTargetPingChart: React.FC<MultiTargetPingChartProps> = memo(
             </div>
           ) : (
             <>
-              <svg
-                viewBox={`0 0 ${W} ${H}`}
-                preserveAspectRatio="none"
-                style={{ width: '100%', height: '100%', overflow: 'visible', display: 'block' }}
+              <canvas
+                ref={canvasRef}
+                style={{ width: '100%', height: '100%', display: 'block' }}
                 onMouseMove={(e) => {
                   const rect = e.currentTarget.getBoundingClientRect();
                   schedulePointerIndex(e.clientX, rect.left, rect.width);
@@ -410,146 +777,134 @@ export const MultiTargetPingChart: React.FC<MultiTargetPingChartProps> = memo(
                   }
                 }}
                 onTouchEnd={() => setHoverIdx(null)}
-              >
-                {[0, 0.33, 0.66, 1].map((ratio) => {
-                  const y = padTop + plotH * ratio;
-                  const val = Math.round(
-                    chartGeometry.maxVal - (chartGeometry.maxVal - chartGeometry.minVal) * ratio
-                  );
-                  return (
-                    <g key={ratio}>
-                      <line
-                        x1={padLeft}
-                        y1={y}
-                        x2={W - padRight}
-                        y2={y}
-                        stroke="var(--chart-grid)"
-                        strokeDasharray={ratio === 1 ? undefined : '4 4'}
-                      />
-                      <text
-                        x={padLeft - 6}
-                        y={y + 4}
-                        textAnchor="end"
-                        fill="var(--chart-axis)"
-                        fontSize="10.5"
-                        className="mono"
-                      >
-                        {val}
-                      </text>
-                    </g>
-                  );
-                })}
+              />
 
-                {chartGeometry.lossXs.map((x, idx) => (
-                  <rect
-                    key={idx}
-                    x={x - 1.5}
-                    y={padTop + plotH - 20}
-                    width={3}
-                    height={20}
-                    rx={1.5}
-                    fill="var(--accent-coral)"
-                    opacity={0.65}
-                  />
-                ))}
-
-                {chartGeometry.paths.map((item) => (
-                  <path
-                    key={item.taskId}
-                    d={item.d}
-                    fill="none"
-                    stroke={item.color}
-                    strokeWidth={1.8}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                ))}
-
-                {chartGeometry.xTicks.map((t) => (
-                  <text
-                    key={t.p}
-                    x={t.x}
-                    y={H - 4}
-                    textAnchor={t.p === 0 ? 'start' : t.p === 1 ? 'end' : 'middle'}
-                    fill="var(--chart-axis)"
-                    fontSize="10.5"
-                    className="mono"
-                  >
-                    {t.label}
-                  </text>
-                ))}
-
-                {hoverIdx !== null && (
-                  <line
-                    x1={padLeft + (hoverIdx / Math.max(1, timelineCount - 1)) * plotW}
-                    y1={padTop}
-                    x2={padLeft + (hoverIdx / Math.max(1, timelineCount - 1)) * plotW}
-                    y2={padTop + plotH}
-                    stroke="var(--text-muted)"
-                    strokeWidth={1}
-                    strokeDasharray="3 3"
-                  />
-                )}
-              </svg>
-
-              {hoverIdx !== null && activeSeries.length > 0 && (
+              {safeHoverIdx !== null && activeSeries.length > 0 && (
                 <div
                   className="mono"
                   style={{
                     position: 'absolute',
-                    top: 6,
-                    left: hoverIdx > timelineCount / 2 ? 46 : undefined,
-                    right: hoverIdx <= timelineCount / 2 ? 10 : undefined,
-                    maxWidth: 'min(250px, calc(100% - 54px))',
-                    maxHeight: 196,
+                    top: 10,
+                    left: hoverRatio > 0.5 ? PAD_LEFT + 12 : undefined,
+                    right: hoverRatio <= 0.5 ? PAD_RIGHT + 8 : undefined,
+                    maxWidth: useTwoColTooltip
+                      ? 'min(360px, calc(100% - 72px))'
+                      : 'min(220px, calc(100% - 72px))',
+                    maxHeight: 'calc(100% - 28px)',
                     overflowY: 'auto',
-                    padding: '8px 10px',
-                    borderRadius: 9,
+                    padding: '8px 11px',
+                    borderRadius: 10,
                     backgroundColor: 'var(--glass-popover-bg)',
+                    backdropFilter: 'blur(12px)',
+                    WebkitBackdropFilter: 'blur(12px)',
                     border: '1px solid var(--glass-border-hover)',
                     fontSize: 11,
                     pointerEvents: 'none',
-                    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.35)',
+                    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.24)',
                     zIndex: 10,
                   }}
                 >
-                  <div style={{ color: 'var(--text-muted)', marginBottom: 4 }}>
-                    {formatAxisTime(hoveredTs, 48)}
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 10,
+                      color: 'var(--text-muted)',
+                      paddingBottom: 5,
+                      marginBottom: 5,
+                      borderBottom: '1px solid var(--glass-divider)',
+                      fontSize: 10.5,
+                    }}
+                  >
+                    <span>{formatTooltipTime(hoveredTs)}</span>
+                    {cutPeak && <span>削峰</span>}
                   </div>
-                  {activeSeries.map((s) => {
-                    const pt = pickSample(s.points, hoverIdx, timelineCount);
-                    if (!pt) return null;
-                    const val = cutPeak ? pt.shavedMs : pt.rawMs;
-                    return (
-                      <div
-                        key={s.taskId}
-                        style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          gap: 8,
-                          color: s.color,
-                          lineHeight: 1.45,
-                        }}
-                      >
-                        <span
+
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: useTwoColTooltip
+                        ? 'repeat(2, minmax(128px, 1fr))'
+                        : 'minmax(145px, 1fr)',
+                      columnGap: 14,
+                      rowGap: 3.5,
+                    }}
+                  >
+                    {activeSeries.map((s) => {
+                      const pt = pickSample(s.points, safeHoverIdx, sampleCount);
+                      if (!pt) return null;
+                      const val = cutPeak ? pt.shavedMs : pt.rawMs;
+                      return (
+                        <div
+                          key={s.taskId}
                           style={{
-                            whiteSpace: 'nowrap',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: 8,
+                            minWidth: 0,
+                            lineHeight: 1.4,
                           }}
                         >
-                          {s.taskName}
-                        </span>
-                        <span style={{ flexShrink: 0, fontWeight: 600 }}>
-                          {pt.lost
-                            ? '丢包'
-                            : cutPeak && pt.wasShaved && pt.rawMs !== null
-                            ? `${val}ms (${pt.rawMs})`
-                            : `${val ?? '--'}ms`}
-                        </span>
-                      </div>
-                    );
-                  })}
+                          <span
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 5,
+                              minWidth: 0,
+                              color: 'var(--text-secondary)',
+                            }}
+                          >
+                            <span
+                              style={{
+                                width: 6,
+                                height: 6,
+                                borderRadius: '50%',
+                                backgroundColor: s.color,
+                                flexShrink: 0,
+                              }}
+                            />
+                            <span
+                              style={{
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                              }}
+                            >
+                              {s.taskName}
+                            </span>
+                          </span>
+                          <span
+                            style={{
+                              flexShrink: 0,
+                              fontWeight: 600,
+                              color: pt.lost ? 'var(--accent-coral)' : 'var(--text-primary)',
+                            }}
+                          >
+                            {pt.lost ? (
+                              '丢包'
+                            ) : cutPeak && pt.wasShaved && pt.rawMs !== null ? (
+                              <>
+                                {val}ms
+                                <span
+                                  style={{
+                                    color: 'var(--text-muted)',
+                                    fontWeight: 400,
+                                    fontSize: 10,
+                                  }}
+                                >
+                                  ({pt.rawMs})
+                                </span>
+                              </>
+                            ) : (
+                              `${val ?? '--'}ms`
+                            )}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
             </>
@@ -570,7 +925,10 @@ interface NetworkLoadChartProps {
 export const NetworkLoadChart: React.FC<NetworkLoadChartProps> = memo(
   ({ records, hours, loading }) => {
     const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+    const wellRef = useRef<HTMLDivElement | null>(null);
+    const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const rafRef = useRef<number | null>(null);
+    const layout = usePlotObserver(wellRef);
 
     useEffect(() => {
       return () => {
@@ -578,18 +936,12 @@ export const NetworkLoadChart: React.FC<NetworkLoadChartProps> = memo(
       };
     }, []);
 
-    const W = 780;
-    const H = 215;
-    const padLeft = 44;
-    const padRight = 14;
-    const padTop = 18;
-    const padBottom = 26;
-    const plotW = W - padLeft - padRight;
-    const plotH = H - padTop - padBottom;
+    const plotW = Math.max(10, layout.width - PAD_LEFT - PAD_RIGHT);
+    const plotH = Math.max(10, layout.height - PAD_TOP - PAD_BOTTOM);
 
     const chartData = useMemo(() => {
       const sorted = [...records].sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
-      const series = sorted.map((r) => {
+      const fullSeries = sorted.map((r) => {
         const ramPct = r.ram_total > 0 ? (r.ram / r.ram_total) * 100 : 0;
         return {
           ts: Date.parse(r.time) || 0,
@@ -600,59 +952,219 @@ export const NetworkLoadChart: React.FC<NetworkLoadChartProps> = memo(
         };
       });
 
-      const peakRx = series.length > 0 ? Math.max(...series.map((s) => s.rxMbps)) : 0;
-      const peakTx = series.length > 0 ? Math.max(...series.map((s) => s.txMbps)) : 0;
-      const maxMbps = Math.ceil(Math.max(peakRx, peakTx, 10) * 1.15);
+      const cap = layout.width > 0 ? Math.max(96, Math.floor(plotW / 3.2)) : 240;
+      const series =
+        fullSeries.length <= cap
+          ? fullSeries
+          : Array.from({ length: cap }, (_, i) => {
+              const idx = Math.min(
+                fullSeries.length - 1,
+                Math.round((i / Math.max(1, cap - 1)) * (fullSeries.length - 1))
+              );
+              return fullSeries[idx];
+            });
+
+      const peakRx = fullSeries.length > 0 ? Math.max(...fullSeries.map((s) => s.rxMbps)) : 0;
+      const peakTx = fullSeries.length > 0 ? Math.max(...fullSeries.map((s) => s.txMbps)) : 0;
+      const axis = computeNiceAxis(0, Math.max(peakRx, peakTx, 8));
 
       const avgCpu =
-        series.length > 0
-          ? series.reduce((acc, s) => acc + s.cpuPct, 0) / series.length
+        fullSeries.length > 0
+          ? fullSeries.reduce((acc, s) => acc + s.cpuPct, 0) / fullSeries.length
           : 0;
       const avgRam =
-        series.length > 0
-          ? series.reduce((acc, s) => acc + s.ramPct, 0) / series.length
+        fullSeries.length > 0
+          ? fullSeries.reduce((acc, s) => acc + s.ramPct, 0) / fullSeries.length
           : 0;
 
-      const buildPoints = (getter: (s: (typeof series)[number]) => number, maxY: number) => {
-        if (series.length === 0) return '';
-        return series
-          .map((s, i) => {
-            const x = padLeft + (i / Math.max(1, series.length - 1)) * plotW;
-            const y =
-              padTop + plotH - (Math.min(maxY, getter(s)) / Math.max(1, maxY)) * plotH;
-            return `${x.toFixed(1)},${y.toFixed(1)}`;
-          })
-          .join(' ');
-      };
-
+      const tickCount = layout.width > 0 && layout.width < 460 ? 4 : 5;
       const xTicks =
         series.length > 0
-          ? [0, 0.25, 0.5, 0.75, 1].map((p) => {
-              const idx = Math.min(
+          ? Array.from({ length: tickCount }, (_, idx) => {
+              const p = idx / Math.max(1, tickCount - 1);
+              const sIdx = Math.min(
                 series.length - 1,
                 Math.round(p * Math.max(0, series.length - 1))
               );
               return {
                 p,
-                x: padLeft + p * plotW,
-                label: formatAxisTime(series[idx]?.ts ?? 0, hours),
+                label: formatAxisTime(series[sIdx]?.ts ?? 0, hours),
               };
             })
           : [];
 
       return {
         series,
-        maxMbps,
+        maxMbps: axis.max,
+        yTicks: axis.ticks,
         peakRx,
         peakTx,
         avgCpu,
         avgRam,
-        rxPoints: buildPoints((s) => s.rxMbps, maxMbps),
-        txPoints: buildPoints((s) => s.txMbps, maxMbps),
-        cpuPoints: buildPoints((s) => s.cpuPct, 100),
         xTicks,
       };
-    }, [records, hours, plotW, plotH]);
+    }, [records, hours, layout.width, plotW]);
+
+    const safeHoverIdx =
+      hoverIdx !== null && chartData.series.length > 0
+        ? Math.min(hoverIdx, chartData.series.length - 1)
+        : null;
+
+    // High-DPI Retina Canvas Renderer for Network & CPU Load
+    useEffect(() => {
+      const canvas = canvasRef.current;
+      const len = chartData.series.length;
+      if (!canvas || layout.width <= 0 || layout.height <= 0 || len === 0) return;
+
+      const dpr = Math.min(window.devicePixelRatio || 1, 3);
+      const targetW = Math.round(layout.width * dpr);
+      const targetH = Math.round(layout.height * dpr);
+      if (canvas.width !== targetW || canvas.height !== targetH) {
+        canvas.width = targetW;
+        canvas.height = targetH;
+      }
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, layout.width, layout.height);
+
+      const styles = getComputedStyle(canvas);
+      const gridColor = styles.getPropertyValue('--chart-grid').trim() || 'rgba(148, 163, 184, 0.12)';
+      const axisColor = styles.getPropertyValue('--chart-axis').trim() || '#8b9bb0';
+      const bgCanvas = styles.getPropertyValue('--bg-canvas').trim() || '#090d16';
+      const cyanColor = styles.getPropertyValue('--accent-cyan').trim() || '#0ea5e9';
+      const emeraldColor = styles.getPropertyValue('--accent-emerald').trim() || '#10b981';
+      const amberColor = styles.getPropertyValue('--accent-amber').trim() || '#f59e0b';
+      const fontMono =
+        styles.getPropertyValue('--font-mono').trim() ||
+        'ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, monospace';
+
+      const maxY = Math.max(1, chartData.maxMbps);
+      const xFor = (i: number) => PAD_LEFT + (i / Math.max(1, len - 1)) * plotW;
+      const yForMbps = (v: number) => PAD_TOP + plotH - (Math.min(maxY, v) / maxY) * plotH;
+      const yForPct = (v: number) => PAD_TOP + plotH - (Math.min(100, v) / 100) * plotH;
+
+      // 1. Gridlines & Y-Axis Labels
+      ctx.font = `11px ${fontMono}`;
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'right';
+
+      for (let i = 0; i < chartData.yTicks.length; i++) {
+        const val = chartData.yTicks[i];
+        const y = Math.round(yForMbps(val)) + 0.5;
+        ctx.beginPath();
+        ctx.strokeStyle = gridColor;
+        ctx.lineWidth = 1;
+        if (i === 0) ctx.setLineDash([]);
+        else ctx.setLineDash([3, 4]);
+        ctx.moveTo(PAD_LEFT, y);
+        ctx.lineTo(PAD_LEFT + plotW, y);
+        ctx.stroke();
+
+        ctx.fillStyle = axisColor;
+        ctx.fillText(`${val}M`, PAD_LEFT - 8, y);
+      }
+      ctx.setLineDash([]);
+
+      // 2. X-Axis Labels
+      ctx.textBaseline = 'bottom';
+      for (const tick of chartData.xTicks) {
+        const x = PAD_LEFT + tick.p * plotW;
+        ctx.textAlign = tick.p === 0 ? 'left' : tick.p === 1 ? 'right' : 'center';
+        ctx.fillStyle = axisColor;
+        ctx.fillText(tick.label, x, layout.height - 3);
+      }
+
+      // 3. Smooth Area + Spline Series
+      const rxPts: PlotPoint[] = chartData.series.map((s, i) => ({
+        x: xFor(i),
+        y: yForMbps(s.rxMbps),
+      }));
+      const txPts: PlotPoint[] = chartData.series.map((s, i) => ({
+        x: xFor(i),
+        y: yForMbps(s.txMbps),
+      }));
+      const cpuPts: PlotPoint[] = chartData.series.map((s, i) => ({
+        x: xFor(i),
+        y: yForPct(s.cpuPct),
+      }));
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(PAD_LEFT - 1, PAD_TOP - 3, plotW + 2, plotH + 6);
+      ctx.clip();
+
+      const drawAreaAndLine = (pts: PlotPoint[], color: string, topAlpha: number, lw: number) => {
+        if (pts.length === 0) return;
+        if (pts.length >= 2) {
+          const grad = ctx.createLinearGradient(0, PAD_TOP, 0, PAD_TOP + plotH);
+          grad.addColorStop(0, withAlpha(color, topAlpha));
+          grad.addColorStop(1, withAlpha(color, 0));
+
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x, PAD_TOP + plotH);
+          traceMonotoneSpline(ctx, pts, false);
+          ctx.lineTo(pts[pts.length - 1].x, PAD_TOP + plotH);
+          ctx.closePath();
+          ctx.fillStyle = grad;
+          ctx.fill();
+        }
+
+        ctx.beginPath();
+        traceMonotoneSpline(ctx, pts, true);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = lw;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.stroke();
+      };
+
+      drawAreaAndLine(rxPts, cyanColor, 0.16, 1.5);
+      drawAreaAndLine(txPts, emeraldColor, 0.12, 1.4);
+
+      if (cpuPts.length >= 2) {
+        ctx.beginPath();
+        ctx.setLineDash([4, 3]);
+        traceMonotoneSpline(ctx, cpuPts, true);
+        ctx.strokeStyle = amberColor;
+        ctx.lineWidth = 1.25;
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      ctx.restore();
+
+      // 4. Hover Crosshair & Dots
+      if (safeHoverIdx !== null) {
+        const hx = Math.round(xFor(safeHoverIdx)) + 0.5;
+        ctx.beginPath();
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = axisColor;
+        ctx.lineWidth = 1;
+        ctx.moveTo(hx, PAD_TOP);
+        ctx.lineTo(hx, PAD_TOP + plotH);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const markers = [
+          { y: rxPts[safeHoverIdx]?.y, color: cyanColor },
+          { y: txPts[safeHoverIdx]?.y, color: emeraldColor },
+          { y: cpuPts[safeHoverIdx]?.y, color: amberColor },
+        ];
+        for (const m of markers) {
+          if (m.y === undefined) continue;
+          ctx.beginPath();
+          ctx.arc(hx, m.y, 3.1, 0, Math.PI * 2);
+          ctx.fillStyle = m.color;
+          ctx.fill();
+          ctx.lineWidth = 1.4;
+          ctx.strokeStyle = bgCanvas;
+          ctx.stroke();
+        }
+      }
+    }, [layout, plotW, plotH, chartData, safeHoverIdx]);
 
     const schedulePointerIndex = useCallback(
       (clientX: number, rectLeft: number, rectWidth: number) => {
@@ -660,18 +1172,23 @@ export const NetworkLoadChart: React.FC<NetworkLoadChartProps> = memo(
         if (len <= 0 || rectWidth <= 0) return;
         if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
         rafRef.current = requestAnimationFrame(() => {
-          const relX = ((clientX - rectLeft) / rectWidth) * W;
-          const clamped = Math.max(padLeft, Math.min(W - padRight, relX));
-          const idx = Math.round(((clamped - padLeft) / plotW) * Math.max(1, len - 1));
+          const localX = clientX - rectLeft;
+          const usableW = Math.max(10, rectWidth - PAD_LEFT - PAD_RIGHT);
+          const clamped = Math.max(0, Math.min(usableW, localX - PAD_LEFT));
+          const idx = Math.round((clamped / usableW) * Math.max(1, len - 1));
           const bounded = Math.max(0, Math.min(len - 1, idx));
           setHoverIdx((prev) => (prev === bounded ? prev : bounded));
         });
       },
-      [chartData.series.length, plotW]
+      [chartData.series.length]
     );
 
     const rangeLabel = hours >= 24 ? `${hours / 24} 天` : `${hours} 小时`;
-    const hovered = hoverIdx !== null ? chartData.series[hoverIdx] : null;
+    const hovered = safeHoverIdx !== null ? chartData.series[safeHoverIdx] : null;
+    const hoverRatio =
+      safeHoverIdx !== null && chartData.series.length > 1
+        ? safeHoverIdx / (chartData.series.length - 1)
+        : 0;
 
     return (
       <div className="glass-panel chart-card km-load-chart">
@@ -693,12 +1210,21 @@ export const NetworkLoadChart: React.FC<NetworkLoadChartProps> = memo(
           </div>
 
           <div
-            style={{ display: 'flex', gap: 10, fontSize: 11.5, flexWrap: 'wrap' }}
+            style={{ display: 'flex', gap: 12, fontSize: 11.5, flexWrap: 'wrap' }}
             className="mono"
           >
-            <span style={{ color: 'var(--accent-cyan)' }}>● 下行 RX</span>
-            <span style={{ color: 'var(--accent-emerald)' }}>● 上行 TX</span>
-            <span style={{ color: 'var(--accent-amber)' }}>┈ CPU%</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: 'var(--text-secondary)' }}>
+              <span style={{ width: 7, height: 7, borderRadius: '50%', backgroundColor: 'var(--accent-cyan)' }} />
+              下行 RX
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: 'var(--text-secondary)' }}>
+              <span style={{ width: 7, height: 7, borderRadius: '50%', backgroundColor: 'var(--accent-emerald)' }} />
+              上行 TX
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: 'var(--text-secondary)' }}>
+              <span style={{ width: 9, height: 2, backgroundColor: 'var(--accent-amber)', borderRadius: 1 }} />
+              CPU%
+            </span>
           </div>
         </div>
 
@@ -707,14 +1233,14 @@ export const NetworkLoadChart: React.FC<NetworkLoadChartProps> = memo(
             <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>峰值下行</div>
             <div style={{ fontSize: 14, fontWeight: 600, marginTop: 3 }}>
               {chartData.peakRx.toFixed(1)}{' '}
-              <span style={{ fontSize: 10.5, fontWeight: 400 }}>Mbps</span>
+              <span style={{ fontSize: 10.5, fontWeight: 400, color: 'var(--text-muted)' }}>Mbps</span>
             </div>
           </div>
           <div className="carrier-cell">
             <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>峰值上行</div>
             <div style={{ fontSize: 14, fontWeight: 600, marginTop: 3 }}>
               {chartData.peakTx.toFixed(1)}{' '}
-              <span style={{ fontSize: 10.5, fontWeight: 400 }}>Mbps</span>
+              <span style={{ fontSize: 10.5, fontWeight: 400, color: 'var(--text-muted)' }}>Mbps</span>
             </div>
           </div>
           <div className="carrier-cell">
@@ -725,14 +1251,7 @@ export const NetworkLoadChart: React.FC<NetworkLoadChartProps> = memo(
           </div>
         </div>
 
-        <div
-          style={{
-            position: 'relative',
-            width: '100%',
-            height: 210,
-            touchAction: 'pan-y',
-          }}
-        >
+        <div className="chart-canvas-well" style={{ height: 250 }} ref={wellRef}>
           {loading && chartData.series.length === 0 ? (
             <div
               className="mono"
@@ -763,10 +1282,9 @@ export const NetworkLoadChart: React.FC<NetworkLoadChartProps> = memo(
             </div>
           ) : (
             <>
-              <svg
-                viewBox={`0 0 ${W} ${H}`}
-                preserveAspectRatio="none"
-                style={{ width: '100%', height: '100%', overflow: 'visible', display: 'block' }}
+              <canvas
+                ref={canvasRef}
+                style={{ width: '100%', height: '100%', display: 'block' }}
                 onMouseMove={(e) => {
                   const rect = e.currentTarget.getBoundingClientRect();
                   schedulePointerIndex(e.clientX, rect.left, rect.width);
@@ -785,138 +1303,57 @@ export const NetworkLoadChart: React.FC<NetworkLoadChartProps> = memo(
                   }
                 }}
                 onTouchEnd={() => setHoverIdx(null)}
-              >
-                <defs>
-                  <linearGradient id="aeroRxGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="var(--accent-cyan)" stopOpacity="0.22" />
-                    <stop offset="100%" stopColor="var(--accent-cyan)" stopOpacity="0.0" />
-                  </linearGradient>
-                  <linearGradient id="aeroTxGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="var(--accent-emerald)" stopOpacity="0.18" />
-                    <stop offset="100%" stopColor="var(--accent-emerald)" stopOpacity="0.0" />
-                  </linearGradient>
-                </defs>
+              />
 
-                {[0, 0.5, 1].map((ratio) => {
-                  const y = padTop + plotH * ratio;
-                  const val = Math.round(chartData.maxMbps * (1 - ratio));
-                  return (
-                    <g key={ratio}>
-                      <line
-                        x1={padLeft}
-                        y1={y}
-                        x2={W - padRight}
-                        y2={y}
-                        stroke="var(--chart-grid)"
-                        strokeDasharray={ratio === 1 ? undefined : '4 4'}
-                      />
-                      <text
-                        x={padLeft - 6}
-                        y={y + 4}
-                        textAnchor="end"
-                        fill="var(--chart-axis)"
-                        fontSize="10.5"
-                        className="mono"
-                      >
-                        {val}M
-                      </text>
-                    </g>
-                  );
-                })}
-
-                <polygon
-                  fill="url(#aeroRxGrad)"
-                  points={`${padLeft},${padTop + plotH} ${chartData.rxPoints} ${W - padRight},${
-                    padTop + plotH
-                  }`}
-                />
-                <polygon
-                  fill="url(#aeroTxGrad)"
-                  points={`${padLeft},${padTop + plotH} ${chartData.txPoints} ${W - padRight},${
-                    padTop + plotH
-                  }`}
-                />
-                <polyline
-                  fill="none"
-                  stroke="var(--accent-cyan)"
-                  strokeWidth={1.9}
-                  points={chartData.rxPoints}
-                />
-                <polyline
-                  fill="none"
-                  stroke="var(--accent-emerald)"
-                  strokeWidth={1.8}
-                  points={chartData.txPoints}
-                />
-                <polyline
-                  fill="none"
-                  stroke="var(--accent-amber)"
-                  strokeWidth={1.5}
-                  strokeDasharray="4 3"
-                  points={chartData.cpuPoints}
-                />
-
-                {chartData.xTicks.map((t) => (
-                  <text
-                    key={t.p}
-                    x={t.x}
-                    y={H - 4}
-                    textAnchor={t.p === 0 ? 'start' : t.p === 1 ? 'end' : 'middle'}
-                    fill="var(--chart-axis)"
-                    fontSize="10.5"
-                    className="mono"
-                  >
-                    {t.label}
-                  </text>
-                ))}
-
-                {hoverIdx !== null && (
-                  <line
-                    x1={
-                      padLeft +
-                      (hoverIdx / Math.max(1, chartData.series.length - 1)) * plotW
-                    }
-                    y1={padTop}
-                    x2={
-                      padLeft +
-                      (hoverIdx / Math.max(1, chartData.series.length - 1)) * plotW
-                    }
-                    y2={padTop + plotH}
-                    stroke="var(--text-muted)"
-                    strokeWidth={1}
-                    strokeDasharray="3 3"
-                  />
-                )}
-              </svg>
-
-              {hovered && hoverIdx !== null && (
+              {hovered && safeHoverIdx !== null && (
                 <div
                   className="mono"
                   style={{
                     position: 'absolute',
-                    top: 6,
-                    left: hoverIdx > chartData.series.length / 2 ? 46 : undefined,
-                    right: hoverIdx <= chartData.series.length / 2 ? 10 : undefined,
-                    padding: '8px 10px',
-                    borderRadius: 9,
+                    top: 10,
+                    left: hoverRatio > 0.5 ? PAD_LEFT + 12 : undefined,
+                    right: hoverRatio <= 0.5 ? PAD_RIGHT + 8 : undefined,
+                    minWidth: 175,
+                    padding: '8px 11px',
+                    borderRadius: 10,
                     backgroundColor: 'var(--glass-popover-bg)',
+                    backdropFilter: 'blur(12px)',
+                    WebkitBackdropFilter: 'blur(12px)',
                     border: '1px solid var(--glass-border-hover)',
                     fontSize: 11,
                     pointerEvents: 'none',
-                    boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+                    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.24)',
+                    zIndex: 10,
                   }}
                 >
-                  <div style={{ color: 'var(--text-muted)', marginBottom: 4 }}>
-                    {formatAxisTime(hovered.ts, 48)}
+                  <div
+                    style={{
+                      color: 'var(--text-muted)',
+                      paddingBottom: 5,
+                      marginBottom: 5,
+                      borderBottom: '1px solid var(--glass-divider)',
+                      fontSize: 10.5,
+                    }}
+                  >
+                    {formatTooltipTime(hovered.ts)}
                   </div>
-                  <div style={{ color: 'var(--accent-cyan)' }}>
-                    下行 RX: {hovered.rxMbps.toFixed(2)} Mbps
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, lineHeight: 1.5 }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>● 下行 RX</span>
+                    <span style={{ fontWeight: 600, color: 'var(--accent-cyan)' }}>
+                      {hovered.rxMbps.toFixed(2)} Mbps
+                    </span>
                   </div>
-                  <div style={{ color: 'var(--accent-emerald)' }}>
-                    上行 TX: {hovered.txMbps.toFixed(2)} Mbps
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, lineHeight: 1.5 }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>● 上行 TX</span>
+                    <span style={{ fontWeight: 600, color: 'var(--accent-emerald)' }}>
+                      {hovered.txMbps.toFixed(2)} Mbps
+                    </span>
                   </div>
-                  <div style={{ color: 'var(--accent-amber)' }}>
-                    CPU: {hovered.cpuPct.toFixed(1)}% · 内存: {hovered.ramPct.toFixed(1)}%
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, lineHeight: 1.5 }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>┈ CPU / 内存</span>
+                    <span style={{ fontWeight: 600, color: 'var(--accent-amber)' }}>
+                      {hovered.cpuPct.toFixed(1)}% / {hovered.ramPct.toFixed(1)}%
+                    </span>
                   </div>
                 </div>
               )}

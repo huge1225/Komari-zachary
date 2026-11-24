@@ -136,10 +136,10 @@ export function getFillClass(pct: number): string {
 
 export function getLatencyColor(ms: number | null, lossPct: number | null): string {
   if (ms === null && lossPct === null) return 'var(--text-muted)';
-  if ((lossPct !== null && lossPct >= 3) || (ms !== null && ms >= 190)) {
+  if ((lossPct !== null && lossPct >= 8) || (ms !== null && ms >= 330)) {
     return 'var(--accent-coral)';
   }
-  if ((lossPct !== null && lossPct >= 0.5) || (ms !== null && ms >= 115)) {
+  if ((lossPct !== null && lossPct >= 1) || (ms !== null && ms >= 185)) {
     return 'var(--accent-amber)';
   }
   return 'var(--accent-emerald)';

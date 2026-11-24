@@ -22,20 +22,20 @@ const CARRIER_LABELS: Record<CarrierKey, string> = {
   cm: '移动',
 };
 
-// Curated Sci-Fi Luminous Palette for Multi-Target Ping Lines (Zero Purple!)
+// Balanced High-Contrast Palette for Dark & Light Glass Surfaces (Zero Purple)
 const PROBE_PALETTE = [
-  '#38bdf8', // Sky Cyan
-  '#fbbf24', // Solar Amber
-  '#34d399', // Mint Emerald
-  '#22d3ee', // Ice Cyan
-  '#fb7185', // Coral Rose
-  '#a3e635', // Cyber Lime
+  '#0ea5e9', // Sky Blue
+  '#10b981', // Emerald
+  '#f59e0b', // Amber
+  '#3b82f6', // Royal Blue
+  '#f43f5e', // Coral Rose
+  '#14b8a6', // Teal
   '#f97316', // Signal Orange
-  '#2dd4bf', // Bioluminescent Teal
-  '#60a5fa', // Cobalt Blue
-  '#facc15', // Warm Gold
-  '#4ade80', // Phosphor Green
-  '#94a3b8', // Titanium Silver
+  '#06b6d4', // Cyan
+  '#65a30d', // Crisp Lime
+  '#d97706', // Warm Ochre
+  '#22c55e', // Fresh Green
+  '#64748b', // Cool Slate
 ];
 
 export function parseTaskIdsConfig(val: unknown): number[] {

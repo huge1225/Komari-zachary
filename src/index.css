@@ -1,6 +1,6 @@
 /* ==========================================================================
-   AeroGlass Minimalist Design System for Komari Monitor (v1.1)
-   High-Performance Calm Glassmorphism · Auto Dark/Light · Mobile Responsive
+   AeroGlass Minimalist Design System for Komari Monitor (v1.2)
+   4-Column Upright Agent Cards · Retina Canvas Spline Charts · Auto Dark/Light
    ========================================================================== */
 
 :root,
@@ -19,23 +19,22 @@
 
   --text-primary: #f8fafc;
   --text-secondary: #cbd5e1;
-  --text-muted: #94a3b8;
+  --text-muted: #8b9bb0;
 
   --glass-bg: rgba(17, 24, 39, var(--glass-alpha));
   --glass-bg-hover: rgba(22, 31, 49, min(0.92, calc(var(--glass-alpha) + 0.07)));
-  --glass-header-bg: rgba(11, 16, 28, 0.78);
+  --glass-header-bg: rgba(11, 16, 28, 0.80);
   --glass-well-bg: rgba(255, 255, 255, 0.04);
-  --glass-well-hover: rgba(255, 255, 255, 0.08);
+  --glass-well-hover: rgba(255, 255, 255, 0.075);
   --glass-input-bg: rgba(15, 23, 42, 0.68);
-  --glass-popover-bg: rgba(15, 23, 42, 0.94);
+  --glass-popover-bg: rgba(15, 23, 42, 0.95);
 
   --glass-border: rgba(255, 255, 255, 0.085);
   --glass-border-hover: rgba(255, 255, 255, 0.20);
   --glass-divider: rgba(255, 255, 255, 0.065);
 
-  --glass-shadow: 0 6px 24px rgba(0, 0, 0, 0.32);
+  --glass-shadow: 0 6px 24px rgba(0, 0, 0, 0.30);
 
-  /* Crisp Semantic Signal Palette */
   --accent-primary: #10b981;
   --accent-cyan: #38bdf8;
   --accent-emerald: #10b981;
@@ -52,8 +51,9 @@
   --cm-color: #34d399;
 
   --track-bg: rgba(255, 255, 255, 0.08);
-  --chart-grid: rgba(255, 255, 255, 0.07);
-  --chart-axis: #94a3b8;
+  --chart-grid: rgba(255, 255, 255, 0.065);
+  --chart-axis: #8b9bb0;
+  --chart-well: rgba(9, 13, 22, 0.38);
 }
 
 [data-theme='light'] {
@@ -68,11 +68,11 @@
 
   --glass-bg: rgba(255, 255, 255, var(--glass-alpha));
   --glass-bg-hover: rgba(255, 255, 255, min(0.95, calc(var(--glass-alpha) + 0.10)));
-  --glass-header-bg: rgba(248, 250, 252, 0.80);
+  --glass-header-bg: rgba(248, 250, 252, 0.82);
   --glass-well-bg: rgba(15, 23, 42, 0.035);
   --glass-well-hover: rgba(15, 23, 42, 0.065);
-  --glass-input-bg: rgba(255, 255, 255, 0.72);
-  --glass-popover-bg: rgba(255, 255, 255, 0.96);
+  --glass-input-bg: rgba(255, 255, 255, 0.74);
+  --glass-popover-bg: rgba(255, 255, 255, 0.97);
 
   --glass-border: rgba(203, 213, 225, 0.72);
   --glass-border-hover: rgba(148, 163, 184, 0.95);
@@ -96,11 +96,11 @@
   --cm-color: #059669;
 
   --track-bg: rgba(15, 23, 42, 0.08);
-  --chart-grid: rgba(15, 23, 42, 0.07);
+  --chart-grid: rgba(15, 23, 42, 0.065);
   --chart-axis: #64748b;
+  --chart-well: rgba(241, 245, 249, 0.65);
 }
 
-/* Base Reset */
 *,
 *::before,
 *::after {
@@ -134,9 +134,7 @@ input {
   touch-action: manipulation;
 }
 
-/* ==========================================================================
-   Minimalist Static Ambient Background (Zero GPU Animation Overhead!)
-   ========================================================================== */
+/* Static Ambient Canvas */
 .ambient-backdrop {
   position: fixed;
   inset: 0;
@@ -157,9 +155,7 @@ input {
   filter: brightness(0.42) saturate(0.88);
 }
 
-/* ==========================================================================
-   Layout Shell
-   ========================================================================== */
+/* App Shell — 1420px Container for Balanced 4-Column Desktop Cards */
 .km-layout {
   position: relative;
   z-index: 1;
@@ -171,10 +167,10 @@ input {
 
 .km-container {
   width: 100%;
-  max-width: 1340px;
+  max-width: 1420px;
   margin: 0 auto;
-  padding-left: max(18px, env(safe-area-inset-left, 18px));
-  padding-right: max(18px, env(safe-area-inset-right, 18px));
+  padding-left: max(20px, env(safe-area-inset-left, 20px));
+  padding-right: max(20px, env(safe-area-inset-right, 20px));
 }
 
 .km-main {
@@ -183,15 +179,13 @@ input {
   padding-bottom: 40px;
 }
 
-/* ==========================================================================
-   High-Performance Glassmorphism Card Surface
-   ========================================================================== */
+/* Glass Surface */
 .glass-panel {
   background-color: var(--glass-bg);
   backdrop-filter: blur(var(--glass-blur)) saturate(145%);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(145%);
   border: 1px solid var(--glass-border);
-  border-radius: 12px;
+  border-radius: 14px;
   box-shadow: var(--glass-shadow);
   transition: border-color 0.16s ease, background-color 0.16s ease;
 }
@@ -207,7 +201,6 @@ input {
   }
 }
 
-/* Firefox compositing fallback (keeps 100+ cards locked at 120fps on Firefox) */
 @supports (-moz-appearance: none) {
   .glass-panel,
   .km-navbar,
@@ -223,9 +216,7 @@ input {
   }
 }
 
-/* ==========================================================================
-   Sticky Top Navbar (Single Blur Layer, Zero Nested Blurs)
-   ========================================================================== */
+/* Sticky Navbar */
 .km-navbar {
   position: sticky;
   top: 0;
@@ -302,7 +293,6 @@ input {
   flex-wrap: wrap;
 }
 
-/* Controls avoid redundant nested backdrop-filter passes */
 .glass-segmented {
   display: inline-flex;
   align-items: center;
@@ -401,9 +391,7 @@ input {
   font-size: 12px;
 }
 
-/* ==========================================================================
-   Fleet Overview Strip
-   ========================================================================== */
+/* Fleet Overview */
 .fleet-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -418,7 +406,7 @@ input {
 }
 
 .summary-card {
-  padding: 14px 16px;
+  padding: 15px 17px;
 }
 
 .summary-label {
@@ -443,9 +431,7 @@ input {
   margin-top: 5px;
 }
 
-/* ==========================================================================
-   Filter & Search Toolbar
-   ========================================================================== */
+/* Filter & Search Toolbar */
 .toolbar-row {
   display: flex;
   align-items: center;
@@ -523,35 +509,47 @@ input {
 }
 
 /* ==========================================================================
-   Minimalist Node Card (Inspired by komari-theme-Glassmorphism)
+   4-Column Upright Portrait Agent Cards (No More "Short & Fat"!)
    ========================================================================== */
 .nodes-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(336px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+@media (max-width: 1260px) {
+  .nodes-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 920px) {
+  .nodes-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .km-node-card {
-  padding: 16px;
+  padding: 18px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 13px;
+  gap: 15px;
   content-visibility: auto;
-  contain-intrinsic-size: 0 270px;
+  contain-intrinsic-size: 0 335px;
 }
 
 .node-card-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
 }
 
 .node-id-group {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -572,8 +570,8 @@ input {
 
 .region-tag {
   flex-shrink: 0;
-  padding: 2px 6px;
-  border-radius: 5px;
+  padding: 2px 7px;
+  border-radius: 6px;
   background-color: var(--glass-well-bg);
   border: 1px solid var(--glass-border);
   color: var(--text-secondary);
@@ -583,7 +581,7 @@ input {
 
 .node-title {
   margin: 0;
-  font-size: 14.5px;
+  font-size: 15px;
   font-weight: 600;
   letter-spacing: -0.01em;
   white-space: nowrap;
@@ -595,24 +593,24 @@ input {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 4px;
+  margin-top: 7px;
   font-size: 11px;
   color: var(--text-muted);
   flex-wrap: wrap;
 }
 
 .sub-pill {
-  padding: 1px 6px;
+  padding: 2px 8px;
   border-radius: 999px;
   background-color: var(--glass-well-bg);
 }
 
-/* Clean Unboxed 2x2 Progress Bars (Zero Nested Box Clutter!) */
+/* 2x2 Resource Bars with Comfortable Vertical Breathing Room */
 .metric-quad {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   column-gap: 16px;
-  row-gap: 10px;
+  row-gap: 13px;
 }
 
 .metric-item {
@@ -625,11 +623,11 @@ input {
   justify-content: space-between;
   gap: 6px;
   font-size: 12px;
-  margin-bottom: 5px;
+  margin-bottom: 6px;
 }
 
 .metric-item-label {
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-weight: 500;
 }
 
@@ -640,7 +638,7 @@ input {
 
 .liquid-track {
   width: 100%;
-  height: 4px;
+  height: 4.5px;
   border-radius: 999px;
   background-color: var(--track-bg);
   overflow: hidden;
@@ -667,20 +665,22 @@ input {
 .metric-item-sub {
   font-size: 11px;
   color: var(--text-muted);
-  margin-top: 4px;
+  margin-top: 5px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* Clean Speed + Billing Summary Row */
-.net-bill-row {
+/* Recessed Soft Well for Speed + Cumulative + Residual Value */
+.net-well-box {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
-  padding-top: 10px;
-  border-top: 1px solid var(--glass-divider);
+  padding: 10px 11px;
+  border-radius: 10px;
+  background-color: var(--glass-well-bg);
   font-size: 11.5px;
+  line-height: 1.5;
 }
 
 .net-bill-col {
@@ -690,46 +690,73 @@ input {
   min-width: 0;
 }
 
-/* Minimalist Three-Carrier Trio */
-.carrier-trio {
+/* 3-Row Stacked Three-Carrier List with Mini Sparklines (Matches light.png!) */
+.carrier-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding-top: 2px;
+}
+
+.carrier-row {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: 40px 52px minmax(36px, 1fr) 74px;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  min-height: 20px;
+}
+
+.carrier-row-name {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.carrier-row-ms {
+  text-align: right;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.carrier-spark-wrap {
+  height: 16px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.carrier-row-loss {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+/* Optional Subtle Bottom Node Tags */
+.node-tags-row {
+  display: flex;
+  align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
   padding-top: 10px;
   border-top: 1px solid var(--glass-divider);
 }
 
-.carrier-cell {
-  padding: 6px 8px;
-  border-radius: 8px;
-  background-color: var(--glass-well-bg);
-  min-width: 0;
-}
-
-.carrier-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.carrier-ms {
-  font-size: 13.5px;
-  font-weight: 600;
-  margin-top: 2px;
-  line-height: 1.25;
-}
-
-.carrier-loss {
+.node-tag-badge {
   font-size: 10.5px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
   color: var(--text-muted);
-  margin-top: 1px;
-  white-space: nowrap;
+  background-color: var(--glass-well-bg);
 }
 
 /* ==========================================================================
-   Node Detail Sub-Page
+   Node Detail Sub-Page & Retina Canvas Charts
    ========================================================================== */
 .detail-topbar {
   display: flex;
@@ -767,7 +794,7 @@ input {
 }
 
 .chart-card {
-  padding: 16px 18px;
+  padding: 18px 20px;
   margin-bottom: 14px;
 }
 
@@ -776,35 +803,50 @@ input {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
   flex-wrap: wrap;
 }
 
+/* Calm Minimalist Task Legend Pills */
 .probe-matrix-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
-  gap: 7px;
-  margin-bottom: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(186px, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
 }
 
 .probe-chip-card {
   text-align: left;
-  padding: 8px 10px;
+  padding: 7px 10px;
   border-radius: 9px;
   background-color: var(--glass-well-bg);
   border: 1px solid var(--glass-border);
   cursor: pointer;
-  transition: border-color 0.15s ease, opacity 0.15s ease;
+  transition: border-color 0.15s ease, background-color 0.15s ease, opacity 0.15s ease;
   min-width: 0;
+  user-select: none;
 }
 
-.probe-chip-card:hover {
+.probe-chip-card:hover,
+.probe-chip-card.focused {
   border-color: var(--glass-border-hover);
+  background-color: var(--glass-well-hover);
 }
 
 .probe-chip-card.inactive {
-  opacity: 0.40;
+  opacity: 0.36;
   background-color: transparent;
+}
+
+.chart-canvas-well {
+  position: relative;
+  width: 100%;
+  height: 300px;
+  border-radius: 10px;
+  background-color: var(--chart-well);
+  border: 1px solid var(--glass-divider);
+  padding: 6px;
+  touch-action: pan-y;
 }
 
 .chart-stats-row {
@@ -812,6 +854,13 @@ input {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin-bottom: 12px;
+}
+
+.carrier-cell {
+  padding: 8px 11px;
+  border-radius: 8px;
+  background-color: var(--glass-well-bg);
+  min-width: 0;
 }
 
 .detail-specs-grid {
@@ -879,9 +928,9 @@ input {
 }
 
 /* ==========================================================================
-   Mobile Responsive Polish (<= 720px)
+   Mobile Responsive Breakpoint (<= 640px)
    ========================================================================== */
-@media (max-width: 720px) {
+@media (max-width: 640px) {
   .km-container {
     padding-left: max(12px, env(safe-area-inset-left, 12px));
     padding-right: max(12px, env(safe-area-inset-right, 12px));
@@ -890,10 +939,6 @@ input {
   .km-main {
     padding-top: 12px;
     padding-bottom: 26px;
-  }
-
-  .navbar-inner {
-    gap: 8px;
   }
 
   .navbar-controls {
@@ -956,11 +1001,11 @@ input {
 
   .nodes-grid {
     grid-template-columns: 1fr;
-    gap: 11px;
+    gap: 12px;
   }
 
   .km-node-card {
-    padding: 14px;
+    padding: 15px;
   }
 
   .detail-topbar > * {
@@ -975,6 +1020,10 @@ input {
   .probe-matrix-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 6px;
+  }
+
+  .chart-canvas-well {
+    height: 240px;
   }
 }
 

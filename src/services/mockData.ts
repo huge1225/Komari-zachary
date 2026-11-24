@@ -365,13 +365,16 @@ export function generateDemoPingRecords(uuid: string, hours: number): KomariPing
 
   const taskDefs = [
     { id: 101, base: p.ctMs, lossPct: p.ctLoss, phase: 0.3, spikeAmp: 0 },
-    { id: 102, base: Math.round(p.ctMs * 1.18 + 6), lossPct: +(p.ctLoss + 0.6).toFixed(1), phase: 0.9, spikeAmp: 540 },
-    { id: 103, base: Math.round(p.ctMs * 1.32 + 14), lossPct: +(p.ctLoss + 0.4).toFixed(1), phase: 1.4, spikeAmp: 380 },
+    { id: 102, base: Math.round(p.ctMs * 1.12 + 5), lossPct: +(p.ctLoss + 1.4).toFixed(1), phase: 0.9, spikeAmp: 420 },
+    { id: 103, base: Math.round(p.ctMs * 1.18 + 9), lossPct: +(p.ctLoss + 2.2).toFixed(1), phase: 1.4, spikeAmp: 340 },
     { id: 201, base: p.cuMs, lossPct: p.cuLoss, phase: 1.9, spikeAmp: 0 },
-    { id: 202, base: Math.round(p.cuMs * 1.15 + 8), lossPct: +(p.cuLoss + 0.5).toFixed(1), phase: 2.5, spikeAmp: 460 },
-    { id: 301, base: p.cmMs, lossPct: p.cmLoss, phase: 3.1, spikeAmp: 310 },
-    { id: 401, base: Math.max(4, Math.round(p.ctMs * 0.42)), lossPct: 0, phase: 3.8, spikeAmp: 0 },
-    { id: 501, base: Math.max(2, Math.round(p.ctMs * 0.25)), lossPct: 0, phase: 4.4, spikeAmp: 0 },
+    { id: 202, base: Math.round(p.cuMs * 1.09 + 6), lossPct: +(p.cuLoss + 0.5).toFixed(1), phase: 2.5, spikeAmp: 380 },
+    { id: 203, base: Math.round(p.cuMs * 1.15 + 10), lossPct: 0, phase: 2.9, spikeAmp: 0 },
+    { id: 301, base: p.cmMs, lossPct: p.cmLoss, phase: 3.3, spikeAmp: 290 },
+    { id: 302, base: Math.round(p.cmMs * 1.08 + 5), lossPct: 0, phase: 3.7, spikeAmp: 0 },
+    { id: 303, base: Math.round(p.cmMs * 1.16 + 11), lossPct: +(p.cmLoss + 0.8).toFixed(1), phase: 4.1, spikeAmp: 0 },
+    { id: 401, base: 2, lossPct: 0, phase: 4.5, spikeAmp: 0 },
+    { id: 501, base: 1, lossPct: 0, phase: 4.9, spikeAmp: 0 },
   ];
 
   for (let i = 0; i <= pointsCount; i++) {

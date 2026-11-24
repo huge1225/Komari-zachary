@@ -1,5 +1,6 @@
-import React, { memo } from 'react';
+import React, { memo, useMemo } from 'react';
 import type {
+  CarrierMetric,
   ComputedBilling,
   CurrencyCode,
   KomariClient,
@@ -16,6 +17,44 @@ import {
   getLatencyColor,
   normalizeRegionCode,
 } from '../utils/format';
+
+function buildSparklinePath(metric?: CarrierMetric): string {
+  const pts = metric?.points;
+  if (!pts || pts.length < 2) {
+    return 'M 0 8 L 100 8';
+  }
+  // Downsample up to 24 recent points for a crisp, lightweight smooth curve
+  const step = Math.max(1, Math.floor(pts.length / 24));
+  const sampled: number[] = [];
+  for (let i = 0; i < pts.length; i += step) {
+    if (pts[i].ms !== null) sampled.push(pts[i].ms as number);
+  }
+  if (pts[pts.length - 1].ms !== null) {
+    sampled.push(pts[pts.length - 1].ms as number);
+  }
+  if (sampled.length < 2) return 'M 0 8 L 100 8';
+
+  const min = Math.min(...sampled);
+  const max = Math.max(...sampled);
+  const span = Math.max(4, max - min);
+
+  const coords = sampled.map((v, idx) => {
+    const x = (idx / (sampled.length - 1)) * 100;
+    const y = 13.5 - ((v - min) / span) * 11;
+    return [x, y] as const;
+  });
+
+  // Smooth quadratic midpoint spline
+  let d = `M ${coords[0][0].toFixed(1)} ${coords[0][1].toFixed(1)}`;
+  for (let i = 1; i < coords.length - 1; i++) {
+    const xc = (coords[i][0] + coords[i + 1][0]) / 2;
+    const yc = (coords[i][1] + coords[i + 1][1]) / 2;
+    d += ` Q ${coords[i][0].toFixed(1)} ${coords[i][1].toFixed(1)}, ${xc.toFixed(1)} ${yc.toFixed(1)}`;
+  }
+  const last = coords[coords.length - 1];
+  d += ` L ${last[0].toFixed(1)} ${last[1].toFixed(1)}`;
+  return d;
+}
 
 interface NodeCardProps {
   client: KomariClient;
@@ -41,14 +80,43 @@ export const NodeCard: React.FC<NodeCardProps> = memo(
 
     const traffic = computeTrafficUsage(client, live);
     const regionCode = normalizeRegionCode(client.region);
-
     const osShort = (client.os || 'Linux').split(' ')[0];
 
-    const carrierList = [
-      { id: 'ct', title: '电信', color: 'var(--ct-color)', metric: carriers?.ct },
-      { id: 'cu', title: '联通', color: 'var(--cu-color)', metric: carriers?.cu },
-      { id: 'cm', title: '移动', color: 'var(--cm-color)', metric: carriers?.cm },
-    ];
+    const parsedTags = useMemo(() => {
+      if (!client.tags) return [];
+      return client.tags
+        .split(/[;,，]+/)
+        .map((t) => t.trim())
+        .filter(Boolean)
+        .slice(0, 4);
+    }, [client.tags]);
+
+    const carrierRows = useMemo(
+      () => [
+        {
+          id: 'ct',
+          title: '电信',
+          brandColor: 'var(--ct-color)',
+          metric: carriers?.ct,
+          path: buildSparklinePath(carriers?.ct),
+        },
+        {
+          id: 'cu',
+          title: '联通',
+          brandColor: 'var(--cu-color)',
+          metric: carriers?.cu,
+          path: buildSparklinePath(carriers?.cu),
+        },
+        {
+          id: 'cm',
+          title: '移动',
+          brandColor: 'var(--cm-color)',
+          metric: carriers?.cm,
+          path: buildSparklinePath(carriers?.cm),
+        },
+      ],
+      [carriers]
+    );
 
     return (
       <article
@@ -63,7 +131,7 @@ export const NodeCard: React.FC<NodeCardProps> = memo(
           }
         }}
       >
-        {/* 1. Minimalist Header */}
+        {/* 1. Header & Contract Pills */}
         <div>
           <div className="node-card-header">
             <div className="node-id-group">
@@ -100,13 +168,13 @@ export const NodeCard: React.FC<NodeCardProps> = memo(
             <span className="sub-pill">{osShort}</span>
             {billing.hasBilling && !billing.isFree && (
               <span className="sub-pill" style={{ color: 'var(--accent-amber)' }}>
-                月费 {formatCurrencyValue(billing.monthlyInTarget, currency)}
+                {formatCurrencyValue(billing.monthlyInTarget, currency)}/月
               </span>
             )}
           </div>
         </div>
 
-        {/* 2. Clean Borderless 2x2 Progress Grid */}
+        {/* 2. Clean 2x2 Resource Progress Grid */}
         <div className="metric-quad mono">
           <div className="metric-item">
             <div className="metric-item-head">
@@ -183,8 +251,8 @@ export const NodeCard: React.FC<NodeCardProps> = memo(
           </div>
         </div>
 
-        {/* 3. Speed, Cumulative Traffic & Residual Value Strip */}
-        <div className="net-bill-row mono">
+        {/* 3. Recessed Well: Speed + Cumulative + Residual Value */}
+        <div className="net-well-box mono">
           <div className="net-bill-col">
             <span style={{ color: 'var(--accent-emerald)' }}>
               ↑ {formatSpeed(isOnline ? live?.netUp ?? 0 : 0)}
@@ -218,7 +286,7 @@ export const NodeCard: React.FC<NodeCardProps> = memo(
                   <span style={{ color: 'var(--accent-emerald)', fontWeight: 600 }}>
                     {billing.isExpired
                       ? '已到期'
-                      : `余 ${formatCurrencyValue(billing.residualInTarget, currency)}`}
+                      : formatCurrencyValue(billing.residualInTarget, currency)}
                   </span>
                 </>
               )
@@ -231,46 +299,89 @@ export const NodeCard: React.FC<NodeCardProps> = memo(
           </div>
         </div>
 
-        {/* 4. Three-Carrier Latency & Packet Loss Trio */}
-        <div className="carrier-trio mono">
-          {carrierList.map((item) => {
-            const ms = item.metric?.latestMs ?? null;
-            const loss = item.metric?.lossPct ?? null;
-            const statusColor = getLatencyColor(ms, loss);
+        {/* 4. 3-Row Stacked Three-Carrier List with Smooth Sparklines */}
+        <div className="carrier-rows mono">
+          {carrierRows.map((row) => {
+            const ms = row.metric?.latestMs ?? null;
+            const loss = row.metric?.lossPct ?? null;
+            const msTone = getLatencyColor(ms, loss);
+            const sparkTone =
+              ms === null
+                ? 'var(--text-muted)'
+                : loss !== null && loss >= 8
+                ? 'var(--accent-coral)'
+                : row.brandColor;
+            const lossTone =
+              loss === null
+                ? 'var(--text-muted)'
+                : loss >= 5
+                ? 'var(--accent-coral)'
+                : loss > 0
+                ? 'var(--accent-amber)'
+                : 'var(--accent-emerald)';
+
             return (
               <div
-                key={item.id}
-                className="carrier-cell"
-                title={item.metric?.taskName || item.title}
+                key={row.id}
+                className="carrier-row"
+                title={row.metric?.taskName || row.title}
               >
-                <div className="carrier-head">
-                  <span>{item.title}</span>
+                <span className="carrier-row-name">
                   <span
                     style={{
-                      width: 5,
-                      height: 5,
+                      width: 6,
+                      height: 6,
                       borderRadius: '50%',
-                      backgroundColor: statusColor,
+                      backgroundColor: sparkTone,
+                      flexShrink: 0,
                     }}
                   />
-                </div>
-                <div className="carrier-ms" style={{ color: statusColor }}>
-                  {ms !== null ? (
-                    <>
-                      {ms}
-                      <span style={{ fontSize: 10.5, fontWeight: 400, opacity: 0.75 }}>ms</span>
-                    </>
-                  ) : (
-                    <span style={{ fontSize: 12, opacity: 0.5 }}>--</span>
-                  )}
-                </div>
-                <div className="carrier-loss">
-                  丢包 {loss !== null ? `${loss.toFixed(1)}%` : '--'}
-                </div>
+                  <span>{row.title}</span>
+                </span>
+
+                <span className="carrier-row-ms" style={{ color: msTone }}>
+                  {ms !== null ? `${ms} ms` : '--'}
+                </span>
+
+                <span className="carrier-spark-wrap">
+                  <svg
+                    viewBox="0 0 100 16"
+                    preserveAspectRatio="none"
+                    style={{ width: '100%', height: 15, display: 'block', overflow: 'visible' }}
+                  >
+                    <path
+                      d={row.path}
+                      fill="none"
+                      stroke={sparkTone}
+                      strokeWidth={1.25}
+                      vectorEffect="non-scaling-stroke"
+                      strokeLinecap="round"
+                      opacity={ms !== null ? 0.88 : 0.25}
+                    />
+                  </svg>
+                </span>
+
+                <span className="carrier-row-loss">
+                  <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>丢包</span>
+                  <span style={{ color: lossTone, fontWeight: 600 }}>
+                    {loss !== null ? `${loss.toFixed(1)}%` : '--'}
+                  </span>
+                </span>
               </div>
             );
           })}
         </div>
+
+        {/* 5. Optional Node Tags */}
+        {parsedTags.length > 0 && (
+          <div className="node-tags-row mono">
+            {parsedTags.map((tag) => (
+              <span key={tag} className="node-tag-badge">
+                {tag}
+              </span>
+            ))}
+          </div>
+        )}
       </article>
     );
   }
