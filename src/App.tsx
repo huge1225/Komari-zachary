@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FleetSummary } from './components/FleetSummary';
 import { Navbar } from './components/Navbar';
 import { NodeCard } from './components/NodeCard';
@@ -10,20 +10,25 @@ import {
 import {
   bootstrapKomariData,
   fetchNodePingHistory,
+  fetchTaskPingRecords,
+  mapWithConcurrency,
   subscribeLiveTelemetry,
 } from './services/komariApi';
 import type {
   AppearanceMode,
+  ComputedBilling,
   CurrencyCode,
   ExchangeRateState,
   KomariClient,
+  KomariPingBasicInfo,
+  KomariPingRecord,
   KomariPingTask,
   LiveNodeTelemetry,
   NodeCarrierTrio,
   PublicSiteInfo,
 } from './types/komari';
 import { computeNodeBilling, parseCurrencyCode } from './utils/billing';
-import { buildNodeCarrierMetrics } from './utils/carrierMatch';
+import { buildNodeCarrierMetrics, parseTaskIdsConfig } from './utils/carrierMatch';
 import { normalizeRegionCode } from './utils/format';
 
 type SortOption =
@@ -63,18 +68,16 @@ export function App() {
   const [pingTasks, setPingTasks] = useState<KomariPingTask[]>([]);
   const [liveMap, setLiveMap] = useState<Record<string, LiveNodeTelemetry>>({});
   const [carrierMap, setCarrierMap] = useState<Record<string, NodeCarrierTrio>>({});
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
-  // Route state: null = Main Dashboard, uuid = Node Detail Sub-Page
   const [activeNodeUuid, setActiveNodeUuid] = useState<string | null>(() =>
     parseRouteUuid(window.location.pathname)
   );
 
-  // Filters & Sorting on Main Dashboard
   const [regionFilter, setRegionFilter] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [sortBy, setSortBy] = useState<SortOption>('weight');
 
-  // Auto-System Appearance Mode ('system' | 'dark' | 'light') + Live OS Listener
   const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(() => {
     const saved = localStorage.getItem('appearance');
     if (saved === 'light' || saved === 'dark' || saved === 'system') return saved;
@@ -101,7 +104,6 @@ export function App() {
         : 'light'
       : appearanceMode;
 
-  // Frontend Live Currency Switcher
   const [currency, setCurrency] = useState<CurrencyCode>(() => {
     const saved = localStorage.getItem('km_zachary_currency');
     return saved ? parseCurrencyCode(saved) : 'CNY';
@@ -111,7 +113,18 @@ export function App() {
   );
   const [fxRefreshing, setFxRefreshing] = useState(false);
 
-  // Browser history navigation sync
+  // Pause optional custom background video when tab is hidden
+  useEffect(() => {
+    const onVis = () => {
+      const vid = videoRef.current;
+      if (!vid) return;
+      if (document.visibilityState === 'hidden') vid.pause();
+      else void vid.play().catch(() => {});
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, []);
+
   useEffect(() => {
     const onPopState = () => {
       setActiveNodeUuid(parseRouteUuid(window.location.pathname));
@@ -126,10 +139,9 @@ export function App() {
     if (window.location.pathname !== targetPath) {
       window.history.pushState({}, '', targetPath);
     }
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    window.scrollTo({ top: 0 });
   }, []);
 
-  // Bootstrap Komari public settings, nodes, and ping tasks
   useEffect(() => {
     let mounted = true;
     bootstrapKomariData().then((res) => {
@@ -159,27 +171,27 @@ export function App() {
     };
   }, []);
 
-  // Sync CSS frosted glass variables & resolved theme attribute on <html>
+  // Sync CSS glass tokens on <html>
   useEffect(() => {
     const root = document.documentElement;
     root.setAttribute('data-theme', resolvedTheme);
 
     const blurPx = Number(siteInfo.themeSettings.glass_blur);
-    if (Number.isFinite(blurPx) && blurPx >= 8 && blurPx <= 60) {
+    if (Number.isFinite(blurPx) && blurPx >= 0 && blurPx <= 40) {
       root.style.setProperty('--glass-blur', `${blurPx}px`);
     } else {
-      root.style.setProperty('--glass-blur', '28px');
+      root.style.setProperty('--glass-blur', '14px');
     }
 
     const opacityPct = Number(siteInfo.themeSettings.glass_opacity);
-    if (Number.isFinite(opacityPct) && opacityPct >= 20 && opacityPct <= 92) {
+    if (Number.isFinite(opacityPct) && opacityPct >= 25 && opacityPct <= 98) {
       root.style.setProperty('--glass-alpha', (opacityPct / 100).toFixed(2));
     } else {
-      root.style.setProperty('--glass-alpha', '0.50');
+      root.style.setProperty('--glass-alpha', '0.76');
     }
   }, [resolvedTheme, siteInfo.themeSettings]);
 
-  // Live WebSocket / RPC stream subscription
+  // Live telemetry subscription
   useEffect(() => {
     if (!bootstrapped) return;
     return subscribeLiveTelemetry(isDemo, (nextMap) => {
@@ -187,30 +199,66 @@ export function App() {
     });
   }, [bootstrapped, isDemo]);
 
-  // Fetch & refresh Three-Carrier Ping summaries for Main Dashboard cards ONLY
+  // Optimized Batch Three-Carrier Ping Loading for Main Dashboard
   useEffect(() => {
     if (!bootstrapped || clients.length === 0) return;
     let cancelled = false;
-    const windowHours = Number(siteInfo.themeSettings.ping_window_hours) || 3;
+    const ts = siteInfo.themeSettings;
+    const windowHours = Number(ts.ping_window_hours) || 3;
 
     const loadAllCarriers = async () => {
-      const entries = await Promise.all(
-        clients.map(async (c) => {
-          const hist = await fetchNodePingHistory(c.uuid, windowHours, isDemo);
-          const mergedTasks = [...pingTasks];
-          for (const t of hist.tasks) {
-            if (!mergedTasks.some((m) => m.id === t.id)) mergedTasks.push(t);
-          }
-          const trio = buildNodeCarrierMetrics(
+      if (document.visibilityState === 'hidden') return;
+
+      const ctIds = parseTaskIdsConfig(ts.ct_ping_tasks);
+      const cuIds = parseTaskIdsConfig(ts.cu_ping_tasks);
+      const cmIds = parseTaskIdsConfig(ts.cm_ping_tasks);
+
+      // Fast Path: If all 3 carriers have explicit task IDs in production, fetch by task_id (only ~3 HTTP calls for the whole fleet!)
+      if (!isDemo && ctIds.length > 0 && cuIds.length > 0 && cmIds.length > 0) {
+        const uniqueTaskIds = Array.from(new Set([...ctIds, ...cuIds, ...cmIds]));
+        const batchResults = await mapWithConcurrency(uniqueTaskIds, 3, (tid) =>
+          fetchTaskPingRecords(tid, windowHours)
+        );
+        if (cancelled) return;
+
+        const allRecords: KomariPingRecord[] = [];
+        const allBasicInfos: KomariPingBasicInfo[] = [];
+        for (const r of batchResults) {
+          allRecords.push(...r.records);
+          allBasicInfos.push(...r.basicInfos);
+        }
+
+        const next: Record<string, NodeCarrierTrio> = {};
+        for (const c of clients) {
+          next[c.uuid] = buildNodeCarrierMetrics(
             c.uuid,
-            mergedTasks,
-            hist.records,
-            hist.basicInfos,
-            siteInfo.themeSettings
+            pingTasks,
+            allRecords,
+            allBasicInfos,
+            ts
           );
-          return [c.uuid, trio] as const;
-        })
-      );
+        }
+        setCarrierMap(next);
+        return;
+      }
+
+      // Bounded Concurrency Fallback (max 4 concurrent requests instead of N simultaneous requests)
+      const entries = await mapWithConcurrency(clients, 4, async (c) => {
+        const hist = await fetchNodePingHistory(c.uuid, windowHours, isDemo);
+        const mergedTasks = [...pingTasks];
+        for (const t of hist.tasks) {
+          if (!mergedTasks.some((m) => m.id === t.id)) mergedTasks.push(t);
+        }
+        const trio = buildNodeCarrierMetrics(
+          c.uuid,
+          mergedTasks,
+          hist.records,
+          hist.basicInfos,
+          ts
+        );
+        return [c.uuid, trio] as const;
+      });
+
       if (cancelled) return;
       const next: Record<string, NodeCarrierTrio> = {};
       for (const [id, trio] of entries) {
@@ -263,6 +311,15 @@ export function App() {
     });
   }, []);
 
+  // Precompute billing for all nodes once per currency/FX update (never recomputed on WS ticks!)
+  const billingMap = useMemo(() => {
+    const map: Record<string, ComputedBilling> = {};
+    for (const c of clients) {
+      map[c.uuid] = computeNodeBilling(c, currency, fxState);
+    }
+    return map;
+  }, [clients, currency, fxState]);
+
   const regionCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const c of clients) {
@@ -292,30 +349,33 @@ export function App() {
     sorted.sort((a, b) => {
       if (sortBy === 'residual_desc') {
         return (
-          computeNodeBilling(b, currency, fxState).residualInTarget -
-          computeNodeBilling(a, currency, fxState).residualInTarget
+          (billingMap[b.uuid]?.residualInTarget ?? 0) -
+          (billingMap[a.uuid]?.residualInTarget ?? 0)
         );
       }
       if (sortBy === 'monthly_desc') {
         return (
-          computeNodeBilling(b, currency, fxState).monthlyInTarget -
-          computeNodeBilling(a, currency, fxState).monthlyInTarget
+          (billingMap[b.uuid]?.monthlyInTarget ?? 0) -
+          (billingMap[a.uuid]?.monthlyInTarget ?? 0)
         );
       }
       if (sortBy === 'ct_asc') {
-        const ams = carrierMap[a.uuid]?.ct.latestMs ?? 99999;
-        const bms = carrierMap[b.uuid]?.ct.latestMs ?? 99999;
-        return ams - bms;
+        return (
+          (carrierMap[a.uuid]?.ct.latestMs ?? 99999) -
+          (carrierMap[b.uuid]?.ct.latestMs ?? 99999)
+        );
       }
       if (sortBy === 'cu_asc') {
-        const ams = carrierMap[a.uuid]?.cu.latestMs ?? 99999;
-        const bms = carrierMap[b.uuid]?.cu.latestMs ?? 99999;
-        return ams - bms;
+        return (
+          (carrierMap[a.uuid]?.cu.latestMs ?? 99999) -
+          (carrierMap[b.uuid]?.cu.latestMs ?? 99999)
+        );
       }
       if (sortBy === 'cm_asc') {
-        const ams = carrierMap[a.uuid]?.cm.latestMs ?? 99999;
-        const bms = carrierMap[b.uuid]?.cm.latestMs ?? 99999;
-        return ams - bms;
+        return (
+          (carrierMap[a.uuid]?.cm.latestMs ?? 99999) -
+          (carrierMap[b.uuid]?.cm.latestMs ?? 99999)
+        );
       }
       if (sortBy === 'cpu_desc') {
         return (liveMap[b.uuid]?.cpuUsage ?? 0) - (liveMap[a.uuid]?.cpuUsage ?? 0);
@@ -324,7 +384,7 @@ export function App() {
     });
 
     return sorted;
-  }, [clients, regionFilter, searchQuery, sortBy, currency, fxState, carrierMap, liveMap]);
+  }, [clients, regionFilter, searchQuery, sortBy, billingMap, carrierMap, liveMap]);
 
   const onlineCount = useMemo(
     () => clients.filter((c) => liveMap[c.uuid]?.online).length,
@@ -338,30 +398,33 @@ export function App() {
   );
 
   const customBg = (siteInfo.themeSettings.background_url || '').trim();
-  const defaultBg =
-    resolvedTheme === 'dark' ? '/assets/holo-dark.jpg' : '/assets/holo-light.jpg';
-  const effectiveBg = customBg || defaultBg;
   const defaultDetailHours =
     Number(siteInfo.themeSettings.default_detail_hours) || 3;
 
+  const handleSelectNode = useCallback(
+    (uuid: string) => navigateToNode(uuid),
+    [navigateToNode]
+  );
+  const handleGoHome = useCallback(() => navigateToNode(null), [navigateToNode]);
+
   return (
     <>
-      <div className="holo-backdrop" aria-hidden="true">
-        {isVideoMedia(effectiveBg) ? (
-          <video
-            className="holo-backdrop-media"
-            src={effectiveBg}
-            autoPlay
-            loop
-            muted
-            playsInline
-          />
-        ) : (
-          <img className="holo-backdrop-media" src={effectiveBg} alt="" />
-        )}
-        <div className="holo-orb holo-orb-1" />
-        <div className="holo-orb holo-orb-2" />
-        <div className="holo-orb holo-orb-3" />
+      {/* Minimalist Static Ambient Canvas (Mounts custom media ONLY when configured) */}
+      <div className="ambient-backdrop" aria-hidden="true">
+        {customBg &&
+          (isVideoMedia(customBg) ? (
+            <video
+              ref={videoRef}
+              className="ambient-backdrop-media"
+              src={customBg}
+              autoPlay
+              loop
+              muted
+              playsInline
+            />
+          ) : (
+            <img className="ambient-backdrop-media" src={customBg} alt="" />
+          ))}
       </div>
 
       <div className="km-layout">
@@ -378,7 +441,7 @@ export function App() {
           appearanceMode={appearanceMode}
           resolvedTheme={resolvedTheme}
           onCycleAppearance={handleCycleAppearance}
-          onGoHome={() => navigateToNode(null)}
+          onGoHome={handleGoHome}
         />
 
         <main className="km-main">
@@ -394,8 +457,8 @@ export function App() {
                 fxState={fxState}
                 isDemo={isDemo}
                 defaultHours={defaultDetailHours}
-                onBack={() => navigateToNode(null)}
-                onSwitchNode={(uuid) => navigateToNode(uuid)}
+                onBack={handleGoHome}
+                onSwitchNode={handleSelectNode}
               />
             ) : (
               <div className="km-page-home">
@@ -403,8 +466,8 @@ export function App() {
                   clients={clients}
                   liveMap={liveMap}
                   carrierMap={carrierMap}
+                  billingMap={billingMap}
                   currency={currency}
-                  fxState={fxState}
                   showBilling={siteInfo.themeSettings.show_fleet_billing !== false}
                 />
 
@@ -477,9 +540,9 @@ export function App() {
                         client={client}
                         live={liveMap[client.uuid]}
                         carriers={carrierMap[client.uuid]}
+                        billing={billingMap[client.uuid]}
                         currency={currency}
-                        fxState={fxState}
-                        onSelect={(uuid) => navigateToNode(uuid)}
+                        onSelect={handleSelectNode}
                       />
                     ))}
                   </div>
@@ -492,7 +555,7 @@ export function App() {
         <footer className="km-footer">
           <div className="km-container footer-inner mono">
             <span>Powered by Komari Monitor.</span>
-            <span>AeroGlass v{typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.0'}</span>
+            <span>AeroGlass v{typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.1.0'}</span>
           </div>
         </footer>
       </div>

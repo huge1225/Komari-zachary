@@ -154,9 +154,10 @@ export function subscribeLiveTelemetry(
     let tick = 0;
     onUpdate(createDemoLiveMap(tick));
     const timer = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
       tick += 1;
       onUpdate(createDemoLiveMap(tick));
-    }, 2000);
+    }, 2500);
     return () => window.clearInterval(timer);
   }
 
@@ -166,6 +167,7 @@ export function subscribeLiveTelemetry(
   let rpcFallbackTimer: number | null = null;
 
   const pollRpcFallback = async () => {
+    if (document.visibilityState === 'hidden') return;
     try {
       const res = await fetch('/api/rpc2', {
         method: 'POST',
@@ -192,6 +194,22 @@ export function subscribeLiveTelemetry(
     }
   };
 
+  const requestNow = () => {
+    if (document.visibilityState === 'hidden') return;
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send('get');
+    } else if (rpcFallbackTimer) {
+      void pollRpcFallback();
+    }
+  };
+
+  const onVisChange = () => {
+    if (document.visibilityState === 'visible') {
+      requestNow();
+    }
+  };
+  document.addEventListener('visibilitychange', onVisChange);
+
   const connectWs = () => {
     if (disposed) return;
     try {
@@ -205,10 +223,10 @@ export function subscribeLiveTelemetry(
         }
         ws?.send('get');
         pollTimer = window.setInterval(() => {
-          if (ws?.readyState === WebSocket.OPEN) {
+          if (document.visibilityState !== 'hidden' && ws?.readyState === WebSocket.OPEN) {
             ws.send('get');
           }
-        }, 2000);
+        }, 2500);
       };
 
       ws.onmessage = (ev) => {
@@ -238,7 +256,7 @@ export function subscribeLiveTelemetry(
         if (!disposed) {
           if (!rpcFallbackTimer) {
             void pollRpcFallback();
-            rpcFallbackTimer = window.setInterval(pollRpcFallback, 3000);
+            rpcFallbackTimer = window.setInterval(pollRpcFallback, 3500);
           }
           window.setTimeout(connectWs, 5000);
         }
@@ -246,7 +264,7 @@ export function subscribeLiveTelemetry(
     } catch {
       if (!rpcFallbackTimer) {
         void pollRpcFallback();
-        rpcFallbackTimer = window.setInterval(pollRpcFallback, 3000);
+        rpcFallbackTimer = window.setInterval(pollRpcFallback, 3500);
       }
     }
   };
@@ -255,6 +273,7 @@ export function subscribeLiveTelemetry(
 
   return () => {
     disposed = true;
+    document.removeEventListener('visibilitychange', onVisChange);
     if (pollTimer) window.clearInterval(pollTimer);
     if (rpcFallbackTimer) window.clearInterval(rpcFallbackTimer);
     ws?.close();
@@ -302,6 +321,53 @@ export async function fetchNodePingHistory(
   return { records: [], basicInfos: [], tasks: [] };
 }
 
+export async function fetchTaskPingRecords(
+  taskId: number,
+  hours: number
+): Promise<{
+  records: KomariPingRecord[];
+  basicInfos: KomariPingBasicInfo[];
+}> {
+  try {
+    const res = await fetch(
+      `/api/records/ping?task_id=${encodeURIComponent(taskId)}&hours=${encodeURIComponent(hours)}`
+    );
+    if (res.ok) {
+      const json = await res.json();
+      const data = unwrapData<{
+        records?: KomariPingRecord[];
+        basic_info?: KomariPingBasicInfo[];
+      }>(json);
+      return {
+        records: Array.isArray(data?.records) ? data.records : [],
+        basicInfos: Array.isArray(data?.basic_info) ? data.basic_info : [],
+      };
+    }
+  } catch {
+    // Ignore error
+  }
+  return { records: [], basicInfos: [] };
+}
+
+export async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const idx = cursor++;
+      results[idx] = await worker(items[idx]);
+    }
+  });
+
+  await Promise.all(runners);
+  return results;
+}
+
 export async function fetchNodeLoadHistory(
   uuid: string,
   hours: number,
@@ -322,7 +388,7 @@ export async function fetchNodeLoadHistory(
       if (data && Array.isArray(data.records)) return data.records;
     }
   } catch {
-    // Fallback to RPC2 common:getRecords if needed
+    // Ignore error
   }
 
   return [];

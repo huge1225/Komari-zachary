@@ -5,10 +5,10 @@
   },
   "short": "KomariZachary",
   "description": {
-    "zh-CN": "科技感毛玻璃探针主题",
-    "en": "Sci-Fi frosted glass theme for Komari"
+    "zh-CN": "简约毛玻璃探针主题",
+    "en": "Minimalist glassmorphism theme for Komari"
   },
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Zachary",
   "url": "https://github.com/huge1225/Komari-zachary",
   "preview": "preview.png",
@@ -125,7 +125,7 @@
           "en": "Blur Radius (px)"
         },
         "type": "number",
-        "default": 28
+        "default": 14
       },
       {
         "key": "glass_opacity",
@@ -134,7 +134,7 @@
           "en": "Card Opacity (%)"
         },
         "type": "number",
-        "default": 52
+        "default": 76
       },
       {
         "key": "background_url",
@@ -145,8 +145,8 @@
         "type": "string",
         "default": "",
         "help": {
-          "zh-CN": "支持图片或视频，留空使用内置光场背景",
-          "en": "Image or video URL"
+          "zh-CN": "可选图片或视频 URL，留空使用默认极简背景",
+          "en": "Optional image or video URL"
         }
       },
       {
