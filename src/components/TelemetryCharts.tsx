@@ -1,4 +1,12 @@
-import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import type { KomariLoadRecord, PingTaskPoint, PingTaskSeries } from '../types/komari';
 import { bytesPerSecToMbps } from '../utils/format';
 
@@ -11,6 +19,32 @@ interface PlotLayout {
   width: number;
   height: number;
   themeRev: number;
+}
+
+interface PointerSnapshot {
+  x: number;
+  y: number;
+  wellW: number;
+  wellH: number;
+}
+
+function applyFloatingTooltip(tipEl: HTMLDivElement | null, ptr: PointerSnapshot): void {
+  if (!tipEl || ptr.wellW <= 0 || ptr.wellH <= 0) return;
+  const tipW = tipEl.offsetWidth;
+  const tipH = tipEl.offsetHeight;
+  const offsetX = 16;
+  const margin = 8;
+
+  let tx = ptr.x + offsetX;
+  if (tx + tipW > ptr.wellW - margin) {
+    tx = ptr.x - tipW - offsetX;
+  }
+  tx = Math.max(margin, Math.min(Math.max(margin, ptr.wellW - tipW - margin), tx));
+
+  let ty = ptr.y - Math.min(32, tipH * 0.25);
+  ty = Math.max(margin, Math.min(Math.max(margin, ptr.wellH - tipH - margin), ty));
+
+  tipEl.style.transform = `translate3d(${Math.round(tx)}px, ${Math.round(ty)}px, 0)`;
 }
 
 function formatAxisTime(ts: number, hours: number): string {
@@ -219,6 +253,8 @@ export const MultiTargetPingChart: React.FC<MultiTargetPingChartProps> = memo(
 
     const wellRef = useRef<HTMLDivElement | null>(null);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
+    const tooltipRef = useRef<HTMLDivElement | null>(null);
+    const pointerRef = useRef<PointerSnapshot>({ x: 0, y: 0, wellW: 0, wellH: 0 });
     const rafRef = useRef<number | null>(null);
     const layout = usePlotObserver(wellRef);
 
@@ -502,17 +538,29 @@ export const MultiTargetPingChart: React.FC<MultiTargetPingChartProps> = memo(
       [seriesList]
     );
 
-    const schedulePointerIndex = useCallback(
-      (clientX: number, rectLeft: number, rectWidth: number) => {
-        if (sampleCount <= 0 || rectWidth <= 0) return;
+    const handlePointerMove = useCallback(
+      (clientX: number, clientY: number, canvasEl: HTMLCanvasElement) => {
+        if (sampleCount <= 0) return;
+        const canvasRect = canvasEl.getBoundingClientRect();
+        const wellRect = wellRef.current?.getBoundingClientRect() || canvasRect;
+        if (canvasRect.width <= 0) return;
+
+        pointerRef.current = {
+          x: clientX - wellRect.left,
+          y: clientY - wellRect.top,
+          wellW: wellRect.width,
+          wellH: wellRect.height,
+        };
+
         if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
         rafRef.current = requestAnimationFrame(() => {
-          const localX = clientX - rectLeft;
-          const usableW = Math.max(10, rectWidth - PAD_LEFT - PAD_RIGHT);
+          const localX = clientX - canvasRect.left;
+          const usableW = Math.max(10, canvasRect.width - PAD_LEFT - PAD_RIGHT);
           const clamped = Math.max(0, Math.min(usableW, localX - PAD_LEFT));
           const idx = Math.round((clamped / usableW) * Math.max(1, sampleCount - 1));
           const bounded = Math.max(0, Math.min(sampleCount - 1, idx));
           setHoverIdx((prev) => (prev === bounded ? prev : bounded));
+          applyFloatingTooltip(tooltipRef.current, pointerRef.current);
         });
       },
       [sampleCount]
@@ -523,9 +571,13 @@ export const MultiTargetPingChart: React.FC<MultiTargetPingChartProps> = memo(
       safeHoverIdx !== null && chartModel.refSeries
         ? pickSample(chartModel.refSeries.points, safeHoverIdx, sampleCount)?.ts ?? 0
         : 0;
-    const hoverRatio =
-      safeHoverIdx !== null && sampleCount > 1 ? safeHoverIdx / (sampleCount - 1) : 0;
     const useTwoColTooltip = activeSeries.length > 6 && layout.width >= 520;
+
+    useLayoutEffect(() => {
+      if (safeHoverIdx !== null) {
+        applyFloatingTooltip(tooltipRef.current, pointerRef.current);
+      }
+    }, [safeHoverIdx, activeSeries.length, cutPeak, useTwoColTooltip]);
 
     return (
       <div className="glass-panel chart-card km-load-chart">
@@ -760,20 +812,17 @@ export const MultiTargetPingChart: React.FC<MultiTargetPingChartProps> = memo(
                 ref={canvasRef}
                 style={{ width: '100%', height: '100%', display: 'block' }}
                 onMouseMove={(e) => {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  schedulePointerIndex(e.clientX, rect.left, rect.width);
+                  handlePointerMove(e.clientX, e.clientY, e.currentTarget);
                 }}
                 onMouseLeave={() => setHoverIdx(null)}
                 onTouchStart={(e) => {
                   if (e.touches[0]) {
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    schedulePointerIndex(e.touches[0].clientX, rect.left, rect.width);
+                    handlePointerMove(e.touches[0].clientX, e.touches[0].clientY, e.currentTarget);
                   }
                 }}
                 onTouchMove={(e) => {
                   if (e.touches[0]) {
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    schedulePointerIndex(e.touches[0].clientX, rect.left, rect.width);
+                    handlePointerMove(e.touches[0].clientX, e.touches[0].clientY, e.currentTarget);
                   }
                 }}
                 onTouchEnd={() => setHoverIdx(null)}
@@ -781,16 +830,17 @@ export const MultiTargetPingChart: React.FC<MultiTargetPingChartProps> = memo(
 
               {safeHoverIdx !== null && activeSeries.length > 0 && (
                 <div
+                  ref={tooltipRef}
                   className="mono"
                   style={{
                     position: 'absolute',
-                    top: 10,
-                    left: hoverRatio > 0.5 ? PAD_LEFT + 12 : undefined,
-                    right: hoverRatio <= 0.5 ? PAD_RIGHT + 8 : undefined,
+                    top: 0,
+                    left: 0,
+                    willChange: 'transform',
                     maxWidth: useTwoColTooltip
-                      ? 'min(360px, calc(100% - 72px))'
-                      : 'min(220px, calc(100% - 72px))',
-                    maxHeight: 'calc(100% - 28px)',
+                      ? 'min(360px, calc(100% - 16px))'
+                      : 'min(220px, calc(100% - 16px))',
+                    maxHeight: 'calc(100% - 16px)',
                     overflowY: 'auto',
                     padding: '8px 11px',
                     borderRadius: 10,
@@ -927,6 +977,8 @@ export const NetworkLoadChart: React.FC<NetworkLoadChartProps> = memo(
     const [hoverIdx, setHoverIdx] = useState<number | null>(null);
     const wellRef = useRef<HTMLDivElement | null>(null);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
+    const tooltipRef = useRef<HTMLDivElement | null>(null);
+    const pointerRef = useRef<PointerSnapshot>({ x: 0, y: 0, wellW: 0, wellH: 0 });
     const rafRef = useRef<number | null>(null);
     const layout = usePlotObserver(wellRef);
 
@@ -1166,18 +1218,30 @@ export const NetworkLoadChart: React.FC<NetworkLoadChartProps> = memo(
       }
     }, [layout, plotW, plotH, chartData, safeHoverIdx]);
 
-    const schedulePointerIndex = useCallback(
-      (clientX: number, rectLeft: number, rectWidth: number) => {
+    const handlePointerMove = useCallback(
+      (clientX: number, clientY: number, canvasEl: HTMLCanvasElement) => {
         const len = chartData.series.length;
-        if (len <= 0 || rectWidth <= 0) return;
+        if (len <= 0) return;
+        const canvasRect = canvasEl.getBoundingClientRect();
+        const wellRect = wellRef.current?.getBoundingClientRect() || canvasRect;
+        if (canvasRect.width <= 0) return;
+
+        pointerRef.current = {
+          x: clientX - wellRect.left,
+          y: clientY - wellRect.top,
+          wellW: wellRect.width,
+          wellH: wellRect.height,
+        };
+
         if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
         rafRef.current = requestAnimationFrame(() => {
-          const localX = clientX - rectLeft;
-          const usableW = Math.max(10, rectWidth - PAD_LEFT - PAD_RIGHT);
+          const localX = clientX - canvasRect.left;
+          const usableW = Math.max(10, canvasRect.width - PAD_LEFT - PAD_RIGHT);
           const clamped = Math.max(0, Math.min(usableW, localX - PAD_LEFT));
           const idx = Math.round((clamped / usableW) * Math.max(1, len - 1));
           const bounded = Math.max(0, Math.min(len - 1, idx));
           setHoverIdx((prev) => (prev === bounded ? prev : bounded));
+          applyFloatingTooltip(tooltipRef.current, pointerRef.current);
         });
       },
       [chartData.series.length]
@@ -1185,10 +1249,12 @@ export const NetworkLoadChart: React.FC<NetworkLoadChartProps> = memo(
 
     const rangeLabel = hours >= 24 ? `${hours / 24} 天` : `${hours} 小时`;
     const hovered = safeHoverIdx !== null ? chartData.series[safeHoverIdx] : null;
-    const hoverRatio =
-      safeHoverIdx !== null && chartData.series.length > 1
-        ? safeHoverIdx / (chartData.series.length - 1)
-        : 0;
+
+    useLayoutEffect(() => {
+      if (safeHoverIdx !== null) {
+        applyFloatingTooltip(tooltipRef.current, pointerRef.current);
+      }
+    }, [safeHoverIdx]);
 
     return (
       <div className="glass-panel chart-card km-load-chart">
@@ -1286,20 +1352,17 @@ export const NetworkLoadChart: React.FC<NetworkLoadChartProps> = memo(
                 ref={canvasRef}
                 style={{ width: '100%', height: '100%', display: 'block' }}
                 onMouseMove={(e) => {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  schedulePointerIndex(e.clientX, rect.left, rect.width);
+                  handlePointerMove(e.clientX, e.clientY, e.currentTarget);
                 }}
                 onMouseLeave={() => setHoverIdx(null)}
                 onTouchStart={(e) => {
                   if (e.touches[0]) {
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    schedulePointerIndex(e.touches[0].clientX, rect.left, rect.width);
+                    handlePointerMove(e.touches[0].clientX, e.touches[0].clientY, e.currentTarget);
                   }
                 }}
                 onTouchMove={(e) => {
                   if (e.touches[0]) {
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    schedulePointerIndex(e.touches[0].clientX, rect.left, rect.width);
+                    handlePointerMove(e.touches[0].clientX, e.touches[0].clientY, e.currentTarget);
                   }
                 }}
                 onTouchEnd={() => setHoverIdx(null)}
@@ -1307,12 +1370,13 @@ export const NetworkLoadChart: React.FC<NetworkLoadChartProps> = memo(
 
               {hovered && safeHoverIdx !== null && (
                 <div
+                  ref={tooltipRef}
                   className="mono"
                   style={{
                     position: 'absolute',
-                    top: 10,
-                    left: hoverRatio > 0.5 ? PAD_LEFT + 12 : undefined,
-                    right: hoverRatio <= 0.5 ? PAD_RIGHT + 8 : undefined,
+                    top: 0,
+                    left: 0,
+                    willChange: 'transform',
                     minWidth: 175,
                     padding: '8px 11px',
                     borderRadius: 10,

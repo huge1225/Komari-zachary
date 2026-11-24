@@ -17,6 +17,7 @@ import {
   getLatencyColor,
   normalizeRegionCode,
 } from '../utils/format';
+import { RegionFlag } from './RegionFlag';
 
 function buildSparklinePath(metric?: CarrierMetric): string {
   const pts = metric?.points;
@@ -157,7 +158,10 @@ export const NodeCard: React.FC<NodeCardProps> = memo(
                   剩 {billing.remainDays} 天
                 </span>
               )}
-              <span className="region-tag mono">{regionCode}</span>
+              <span className="region-tag mono">
+                <RegionFlag region={client.region} variant="inline" />
+                <span>{regionCode}</span>
+              </span>
             </div>
           </div>
 

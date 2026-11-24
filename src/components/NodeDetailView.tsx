@@ -26,6 +26,7 @@ import {
   getRegionDisplayName,
   normalizeRegionCode,
 } from '../utils/format';
+import { RegionFlag } from './RegionFlag';
 import { MultiTargetPingChart, NetworkLoadChart } from './TelemetryCharts';
 
 interface NodeDetailViewProps {
@@ -138,7 +139,6 @@ export const NodeDetailView: React.FC<NodeDetailViewProps> = ({
 
   const traffic = computeTrafficUsage(client, live);
   const billing = computeNodeBilling(client, currency, fxState);
-  const regionCode = normalizeRegionCode(client.region);
 
   return (
     <section className="km-page-instance" aria-label="节点详情">
@@ -188,13 +188,8 @@ export const NodeDetailView: React.FC<NodeDetailViewProps> = ({
 
       {/* Hero Node Banner */}
       <div className="glass-panel detail-hero">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 13, minWidth: 0 }}>
-          <div
-            className="region-badge mono"
-            style={{ width: 46, height: 46, fontSize: 14, borderRadius: 13 }}
-          >
-            {regionCode}
-          </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, minWidth: 0 }}>
+          <RegionFlag region={client.region} variant="hero" />
           <div style={{ minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <h1 style={{ margin: 0, fontSize: 19, fontWeight: 700 }}>{client.name}</h1>
@@ -228,37 +223,56 @@ export const NodeDetailView: React.FC<NodeDetailViewProps> = ({
         {billing.hasBilling && (
           <div className="hero-billing-boxes mono">
             <div className="hero-stat-box">
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>每月费用</div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.2 }}>
+                每月费用
+              </div>
               <div
                 style={{
                   fontSize: 16,
                   fontWeight: 700,
                   color: 'var(--accent-amber)',
-                  marginTop: 3,
+                  marginTop: 4,
+                  lineHeight: 1.25,
+                  display: 'flex',
+                  alignItems: 'baseline',
+                  gap: 3,
                 }}
               >
-                {billing.isFree
-                  ? '免费'
-                  : `${formatCurrencyValue(billing.monthlyInTarget, currency)} / 月`}
+                {billing.isFree ? (
+                  <span>免费</span>
+                ) : (
+                  <>
+                    <span>{formatCurrencyValue(billing.monthlyInTarget, currency)}</span>
+                    <span style={{ fontSize: 11.5, fontWeight: 500, opacity: 0.8 }}>/月</span>
+                  </>
+                )}
               </div>
             </div>
             <div className="hero-stat-box">
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>剩余价值</div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.2 }}>
+                剩余价值
+              </div>
               <div
                 style={{
                   fontSize: 16,
                   fontWeight: 700,
                   color: 'var(--accent-emerald)',
-                  marginTop: 3,
+                  marginTop: 4,
+                  lineHeight: 1.25,
+                  display: 'flex',
+                  alignItems: 'baseline',
+                  gap: 4,
                 }}
               >
-                {billing.isFree
-                  ? '长期'
-                  : billing.isExpired
-                  ? '已到期'
-                  : formatCurrencyValue(billing.residualInTarget, currency)}
+                <span>
+                  {billing.isFree
+                    ? '长期'
+                    : billing.isExpired
+                    ? '已到期'
+                    : formatCurrencyValue(billing.residualInTarget, currency)}
+                </span>
                 {billing.remainDays !== null && !billing.isExpired && (
-                  <span style={{ fontSize: 11, fontWeight: 500, opacity: 0.8, marginLeft: 4 }}>
+                  <span style={{ fontSize: 11.5, fontWeight: 500, opacity: 0.8 }}>
                     ({billing.remainDays}天)
                   </span>
                 )}
