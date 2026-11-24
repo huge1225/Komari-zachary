@@ -1,0 +1,208 @@
+{
+  "name": {
+    "zh-CN": "AeroGlass",
+    "en": "AeroGlass"
+  },
+  "short": "KomariZachary",
+  "description": {
+    "zh-CN": "科技感毛玻璃探针主题",
+    "en": "Sci-Fi frosted glass theme for Komari"
+  },
+  "version": "1.0.0",
+  "author": "Zachary",
+  "url": "https://github.com/huge1225/Komari-zachary",
+  "preview": "preview.png",
+  "configuration": {
+    "type": "managed",
+    "name": {
+      "zh-CN": "主题设置",
+      "en": "Theme Settings"
+    },
+    "data": [
+      {
+        "name": {
+          "zh-CN": "主页三网任务",
+          "en": "Three-Carrier Tasks"
+        },
+        "type": "title"
+      },
+      {
+        "key": "ct_ping_tasks",
+        "name": {
+          "zh-CN": "电信 Ping 任务",
+          "en": "Telecom Tasks"
+        },
+        "type": "pingtasks",
+        "default": "[]",
+        "help": {
+          "zh-CN": "留空按关键词匹配",
+          "en": "Falls back to keywords if empty"
+        }
+      },
+      {
+        "key": "cu_ping_tasks",
+        "name": {
+          "zh-CN": "联通 Ping 任务",
+          "en": "Unicom Tasks"
+        },
+        "type": "pingtasks",
+        "default": "[]",
+        "help": {
+          "zh-CN": "留空按关键词匹配",
+          "en": "Falls back to keywords if empty"
+        }
+      },
+      {
+        "key": "cm_ping_tasks",
+        "name": {
+          "zh-CN": "移动 Ping 任务",
+          "en": "Mobile Tasks"
+        },
+        "type": "pingtasks",
+        "default": "[]",
+        "help": {
+          "zh-CN": "留空按关键词匹配",
+          "en": "Falls back to keywords if empty"
+        }
+      },
+      {
+        "key": "ct_keywords",
+        "name": {
+          "zh-CN": "电信匹配词",
+          "en": "Telecom Keywords"
+        },
+        "type": "string",
+        "default": "电信,CT,Telecom,CN2,163,CTG"
+      },
+      {
+        "key": "cu_keywords",
+        "name": {
+          "zh-CN": "联通匹配词",
+          "en": "Unicom Keywords"
+        },
+        "type": "string",
+        "default": "联通,CU,Unicom,9929,4837,CUG"
+      },
+      {
+        "key": "cm_keywords",
+        "name": {
+          "zh-CN": "移动匹配词",
+          "en": "Mobile Keywords"
+        },
+        "type": "string",
+        "default": "移动,CM,Mobile,CMCC,CMI,CMIN2"
+      },
+      {
+        "key": "ping_window_hours",
+        "name": {
+          "zh-CN": "主页统计窗口 (小时)",
+          "en": "Summary Window (Hours)"
+        },
+        "type": "number",
+        "default": 3
+      },
+      {
+        "name": {
+          "zh-CN": "外观与毛玻璃",
+          "en": "Appearance"
+        },
+        "type": "title"
+      },
+      {
+        "key": "default_appearance",
+        "name": {
+          "zh-CN": "默认主题模式",
+          "en": "Default Mode"
+        },
+        "type": "select",
+        "options": "system,dark,light",
+        "default": "system"
+      },
+      {
+        "key": "glass_blur",
+        "name": {
+          "zh-CN": "模糊半径 (px)",
+          "en": "Blur Radius (px)"
+        },
+        "type": "number",
+        "default": 28
+      },
+      {
+        "key": "glass_opacity",
+        "name": {
+          "zh-CN": "卡片不透明度 (%)",
+          "en": "Card Opacity (%)"
+        },
+        "type": "number",
+        "default": 52
+      },
+      {
+        "key": "background_url",
+        "name": {
+          "zh-CN": "自定义背景 URL",
+          "en": "Background URL"
+        },
+        "type": "string",
+        "default": "",
+        "help": {
+          "zh-CN": "支持图片或视频，留空使用内置光场背景",
+          "en": "Image or video URL"
+        }
+      },
+      {
+        "name": {
+          "zh-CN": "汇率与子页面",
+          "en": "Currency & Detail"
+        },
+        "type": "title"
+      },
+      {
+        "key": "default_currency",
+        "name": {
+          "zh-CN": "默认币种",
+          "en": "Default Currency"
+        },
+        "type": "select",
+        "options": "CNY,USD,EUR,HKD,GBP,JPY",
+        "default": "CNY"
+      },
+      {
+        "key": "enable_live_exchange",
+        "name": {
+          "zh-CN": "启用实时汇率",
+          "en": "Live Exchange Rates"
+        },
+        "type": "switch",
+        "default": true
+      },
+      {
+        "key": "show_fleet_billing",
+        "name": {
+          "zh-CN": "展示顶部费用汇总",
+          "en": "Show Billing Summary"
+        },
+        "type": "switch",
+        "default": true
+      },
+      {
+        "key": "default_detail_hours",
+        "name": {
+          "zh-CN": "子页默认时长 (小时)",
+          "en": "Default Detail Hours"
+        },
+        "type": "select",
+        "options": "3,6,12,24",
+        "default": "3"
+      },
+      {
+        "key": "default_cut_peak",
+        "name": {
+          "zh-CN": "默认开启削峰",
+          "en": "Default Peak Shaving"
+        },
+        "type": "switch",
+        "default": true
+      }
+    ]
+  }
+}

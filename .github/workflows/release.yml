@@ -1,0 +1,74 @@
+name: Build & Release Komari Theme
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint code
+        run: npm run lint
+
+      - name: Resolve semantic version
+        id: ver
+        run: node scripts/resolve-version.mjs >> "$GITHUB_OUTPUT"
+
+      - name: Build Komari theme package
+        env:
+          THEME_VERSION: ${{ steps.ver.outputs.version }}
+        run: npm run build:theme
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: komari-theme-zachary-${{ steps.ver.outputs.tag }}
+          path: release/komari-theme-zachary.zip
+          if-no-files-found: error
+
+      - name: Publish GitHub Release for Komari Direct Pull & Update
+        if: steps.ver.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          VER: ${{ steps.ver.outputs.version }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" release/komari-theme-zachary.zip --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --latest
+          else
+            gh release create "$TAG" release/komari-theme-zachary.zip \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "AeroGlass ${TAG}" \
+              --generate-notes \
+              --latest
+          fi
